@@ -191,18 +191,18 @@ class MFF_OCE(nn.Module):
 
 # ========== Memory-Efficient Coreset Sampling ==========
 def random_sampling(features, n_samples):
-    """Fast random sampling."""
+    """Fast random sampling on CPU."""
     N = features.shape[0]
     indices = torch.randperm(N)[:n_samples]
     return features[indices]
 
 
-def greedy_coreset_sampling_batched(features, n_coreset, batch_size=5000):
+def greedy_coreset_sampling_cpu(features, n_coreset, batch_size=10000):
     """
-    Memory-efficient greedy k-Center coreset sampling using batched computation.
+    Memory-efficient greedy k-Center coreset sampling on CPU.
     
     Args:
-        features: [N, D] tensor on GPU
+        features: [N, D] tensor on CPU
         n_coreset: number of samples to select
         batch_size: batch size for distance computation
     
@@ -210,11 +210,14 @@ def greedy_coreset_sampling_batched(features, n_coreset, batch_size=5000):
         selected_features: [n_coreset, D]
     """
     N, D = features.shape
-    device = features.device
+    
+    # Ensure on CPU
+    if features.is_cuda:
+        features = features.cpu()
     
     # Start with random center
     selected_indices = [torch.randint(0, N, (1,)).item()]
-    min_distances = torch.full((N,), float('inf'), device=device)
+    min_distances = torch.full((N,), float('inf'), dtype=features.dtype)
     
     for i in range(n_coreset - 1):
         # Get latest selected feature
@@ -238,7 +241,7 @@ def greedy_coreset_sampling_batched(features, n_coreset, batch_size=5000):
         if (i + 1) % 200 == 0:
             LOGGER.info(f'Coreset sampling progress: {i+1}/{n_coreset}')
     
-    selected_indices = torch.tensor(selected_indices, dtype=torch.long, device=device)
+    selected_indices = torch.tensor(selected_indices, dtype=torch.long)
     return features[selected_indices]
 
 
@@ -250,17 +253,17 @@ def memory_efficient_coreset_sampling(
     device='cuda'
 ):
     """
-    Memory-efficient coreset sampling with automatic method selection.
+    Memory-efficient coreset sampling on CPU with automatic method selection.
     
     Args:
-        features: [N, D] all features (can be on CPU or GPU)
+        features: [N, D] all features
         coreset_sampling_ratio: ratio of features to keep
         max_features_for_greedy: max features before switching to random pre-sampling
         sampling_method: 'greedy', 'random', or 'auto'
-        device: device for computation
+        device: target device for final output
     
     Returns:
-        coreset_features: [M, D] selected features
+        coreset_features: [M, D] selected features on target device
     """
     N, D = features.shape
     n_coreset = max(1, int(N * coreset_sampling_ratio))
@@ -268,10 +271,10 @@ def memory_efficient_coreset_sampling(
     LOGGER.info(f'Coreset sampling: selecting {n_coreset}/{N} features')
     LOGGER.info(f'Method: {sampling_method}, max_features_for_greedy: {max_features_for_greedy}')
     
-    # Move to device if needed
+    # Move to CPU for sampling
     if not isinstance(features, torch.Tensor):
         features = torch.from_numpy(features)
-    features = features.to(device)
+    features = features.cpu()  # Always do sampling on CPU
     
     # Auto select method based on size
     if sampling_method == 'auto':
@@ -285,25 +288,27 @@ def memory_efficient_coreset_sampling(
         result = random_sampling(features, n_coreset)
         
     elif sampling_method == 'greedy':
-        LOGGER.info('Using greedy coreset sampling')
-        result = greedy_coreset_sampling_batched(features, n_coreset)
+        LOGGER.info('Using greedy coreset sampling on CPU')
+        result = greedy_coreset_sampling_cpu(features, n_coreset)
         
     elif sampling_method == 'hybrid':
         # First random sample to reduce size, then greedy
         pre_sample_size = min(max_features_for_greedy, N)
-        LOGGER.info(f'Using hybrid: random pre-sample to {pre_sample_size}, then greedy')
+        LOGGER.info(f'Using hybrid: random pre-sample to {pre_sample_size}, then greedy on CPU')
         
         # Random pre-sampling
         features_reduced = random_sampling(features, pre_sample_size)
         
         # Greedy on reduced set
         n_coreset_adjusted = min(n_coreset, pre_sample_size)
-        result = greedy_coreset_sampling_batched(features_reduced, n_coreset_adjusted)
+        result = greedy_coreset_sampling_cpu(features_reduced, n_coreset_adjusted)
     else:
         raise ValueError(f'Unknown sampling method: {sampling_method}')
     
     LOGGER.info(f'Coreset sampling complete: {result.shape[0]} features selected')
-    return result
+    
+    # Move result to target device
+    return result.to(device)
 
 
 # ========== Adaptive Noising Module ==========
@@ -562,35 +567,45 @@ class RD_NOISING(nn.Module):
                 
                 for i, (feat, name) in enumerate(zip(feats_t, layer_names)):
                     B, C, H, W = feat.shape
-                    # Flatten spatial dimensions and keep on GPU
-                    feat_flat = feat.permute(0, 2, 3, 1).reshape(-1, C)  # [B*H*W, C]
-                    all_features[name].append(feat_flat)  # Keep on GPU
+                    # Flatten spatial dimensions and move to CPU to save GPU memory
+                    feat_flat = feat.permute(0, 2, 3, 1).reshape(-1, C).cpu()  # [B*H*W, C]
+                    all_features[name].append(feat_flat)
                 
                 if (batch_idx + 1) % 10 == 0:
                     LOGGER.info(f'Processed {batch_idx + 1}/{len(train_loader)} batches')
+                    
+                # Clear GPU cache periodically
+                torch.cuda.empty_cache()
         
         # Build memory bank for each scale
         for name in all_features:
-            features = torch.cat(all_features[name], dim=0)
+            LOGGER.info(f'{name}: Concatenating features...')
+            features = torch.cat(all_features[name], dim=0)  # On CPU
             LOGGER.info(f'{name}: Total features collected: {features.shape[0]}')
             
-            # Apply memory-efficient coreset sampling
+            # Clear the list to free memory
+            all_features[name] = []
+            
+            # Apply memory-efficient coreset sampling (on CPU, then move to GPU)
             if self.coreset_sampling_ratio < 1.0:
                 features = memory_efficient_coreset_sampling(
                     features, 
                     coreset_sampling_ratio=self.coreset_sampling_ratio,
                     max_features_for_greedy=max_features_for_greedy,
                     sampling_method=sampling_method,
-                    device=device
+                    device=device  # Will move final result to this device
                 )
                 LOGGER.info(f'{name}: After coreset sampling: {features.shape[0]}')
+            else:
+                features = features.to(device)
             
-            self.memory_banks[name] = features.to(device)
+            self.memory_banks[name] = features
             LOGGER.info(f'{name}: Memory bank shape: {self.memory_banks[name].shape}')
             
-            # Clear intermediate tensors
-            del all_features[name]
-            torch.cuda.empty_cache() if 'cuda' in str(device) else None
+            # Force garbage collection
+            import gc
+            gc.collect()
+            torch.cuda.empty_cache()
         
         self.memory_bank_built = True
         LOGGER.info('='*50)
