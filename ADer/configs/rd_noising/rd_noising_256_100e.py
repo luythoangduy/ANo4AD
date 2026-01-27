@@ -135,6 +135,12 @@ class cfg(cfg_common, cfg_dataset_default, cfg_model_rd_noising):
         # - 'hybrid': random pre-sample then greedy (balanced)
         self.trainer.sampling_method = 'auto'
         self.trainer.max_features_for_greedy = 100000  # Switch to hybrid above this
+        
+        # Device for coreset computation
+        # - 'auto': GPU if <500k features, else CPU (recommended)
+        # - 'cpu': always CPU (slower but safe for large datasets)
+        # - 'cuda': always GPU (faster but may OOM)
+        self.trainer.coreset_device = 'auto'
 
         self.trainer.data.batch_size = self.batch_train
         self.trainer.data.batch_size_per_gpu_test = self.batch_test_per

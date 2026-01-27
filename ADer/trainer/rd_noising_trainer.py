@@ -70,6 +70,7 @@ class RDNoisingTrainer(BaseTrainer):
         # Memory bank sampling configuration
         self.sampling_method = getattr(cfg.trainer, 'sampling_method', 'auto')
         self.max_features_for_greedy = getattr(cfg.trainer, 'max_features_for_greedy', 100000)
+        self.coreset_device = getattr(cfg.trainer, 'coreset_device', 'auto')
         
         log_msg(self.logger, '='*50)
         log_msg(self.logger, 'RD Noising Trainer Initialized')
@@ -77,6 +78,7 @@ class RDNoisingTrainer(BaseTrainer):
         log_msg(self.logger, f'Noise Warmup Epochs: {self.noise_warmup_epochs}')
         log_msg(self.logger, f'Sampling Method: {self.sampling_method}')
         log_msg(self.logger, f'Max Features for Greedy: {self.max_features_for_greedy}')
+        log_msg(self.logger, f'Coreset Device: {self.coreset_device}')
         log_msg(self.logger, '='*50)
 
     def set_input(self, inputs):
@@ -100,6 +102,7 @@ class RDNoisingTrainer(BaseTrainer):
         
         log_msg(self.logger, '='*50)
         log_msg(self.logger, 'Phase 1: Building Memory Bank')
+        log_msg(self.logger, f'Coreset computation device: {self.coreset_device}')
         log_msg(self.logger, '='*50)
         
         # Get the actual model (handle DDP wrapper)
@@ -113,7 +116,8 @@ class RDNoisingTrainer(BaseTrainer):
             self.train_loader, 
             device=f'cuda:{self.cfg.local_rank}',
             sampling_method=self.sampling_method,
-            max_features_for_greedy=self.max_features_for_greedy
+            max_features_for_greedy=self.max_features_for_greedy,
+            coreset_device=self.coreset_device
         )
         
         self.memory_bank_built = True

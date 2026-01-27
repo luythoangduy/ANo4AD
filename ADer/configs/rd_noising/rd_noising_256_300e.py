@@ -130,6 +130,9 @@ class cfg(cfg_common, cfg_dataset_default, cfg_model_rd_noising):
         # Memory bank sampling settings (to avoid OOM)
         self.trainer.sampling_method = 'auto'
         self.trainer.max_features_for_greedy = 100000
+        
+        # Device for coreset computation: 'auto', 'cpu', or 'cuda'
+        self.trainer.coreset_device = 'auto'
 
         self.trainer.data.batch_size = self.batch_train
         self.trainer.data.batch_size_per_gpu_test = self.batch_test_per
