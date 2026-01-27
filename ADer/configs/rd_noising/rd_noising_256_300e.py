@@ -126,6 +126,10 @@ class cfg(cfg_common, cfg_dataset_default, cfg_model_rd_noising):
         # RD Noising specific trainer settings
         self.trainer.noise_enabled = True
         self.trainer.noise_warmup_epochs = 30  # Start noise after 30 epochs warmup
+        
+        # Memory bank sampling settings (to avoid OOM)
+        self.trainer.sampling_method = 'auto'
+        self.trainer.max_features_for_greedy = 100000
 
         self.trainer.data.batch_size = self.batch_train
         self.trainer.data.batch_size_per_gpu_test = self.batch_test_per

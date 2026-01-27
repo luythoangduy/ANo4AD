@@ -126,6 +126,15 @@ class cfg(cfg_common, cfg_dataset_default, cfg_model_rd_noising):
         # RD Noising specific trainer settings
         self.trainer.noise_enabled = True  # Enable adaptive noise
         self.trainer.noise_warmup_epochs = 0  # No warmup, start noise from epoch 0
+        
+        # Memory bank sampling settings (to avoid OOM)
+        # Options: 'auto', 'greedy', 'random', 'hybrid'
+        # - 'auto': automatically choose based on feature count
+        # - 'greedy': full greedy coreset (slow, accurate, may OOM)
+        # - 'random': fast random sampling (fast, less accurate)
+        # - 'hybrid': random pre-sample then greedy (balanced)
+        self.trainer.sampling_method = 'auto'
+        self.trainer.max_features_for_greedy = 100000  # Switch to hybrid above this
 
         self.trainer.data.batch_size = self.batch_train
         self.trainer.data.batch_size_per_gpu_test = self.batch_test_per

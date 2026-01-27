@@ -67,10 +67,16 @@ class RDNoisingTrainer(BaseTrainer):
         self.noise_enabled = getattr(cfg.trainer, 'noise_enabled', True)
         self.noise_warmup_epochs = getattr(cfg.trainer, 'noise_warmup_epochs', 0)
         
+        # Memory bank sampling configuration
+        self.sampling_method = getattr(cfg.trainer, 'sampling_method', 'auto')
+        self.max_features_for_greedy = getattr(cfg.trainer, 'max_features_for_greedy', 100000)
+        
         log_msg(self.logger, '='*50)
         log_msg(self.logger, 'RD Noising Trainer Initialized')
         log_msg(self.logger, f'Noise Enabled: {self.noise_enabled}')
         log_msg(self.logger, f'Noise Warmup Epochs: {self.noise_warmup_epochs}')
+        log_msg(self.logger, f'Sampling Method: {self.sampling_method}')
+        log_msg(self.logger, f'Max Features for Greedy: {self.max_features_for_greedy}')
         log_msg(self.logger, '='*50)
 
     def set_input(self, inputs):
@@ -102,8 +108,13 @@ class RDNoisingTrainer(BaseTrainer):
         else:
             model = self.net
         
-        # Build memory bank
-        model.build_memory_bank(self.train_loader, device=f'cuda:{self.cfg.local_rank}')
+        # Build memory bank with configurable sampling
+        model.build_memory_bank(
+            self.train_loader, 
+            device=f'cuda:{self.cfg.local_rank}',
+            sampling_method=self.sampling_method,
+            max_features_for_greedy=self.max_features_for_greedy
+        )
         
         self.memory_bank_built = True
         
