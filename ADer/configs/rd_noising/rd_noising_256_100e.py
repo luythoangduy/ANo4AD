@@ -90,6 +90,7 @@ class cfg(cfg_common, cfg_dataset_default, cfg_model_rd_noising):
             noise_std_range=(0.01, 0.3),
             noise_layers=[0, 1, 2],  # Apply noise to all layers
             enable_noise=True,
+            distance_batch_size=512,  # Batch size for distance computation (reduce if OOM)
         )
 
         # ==> evaluator
