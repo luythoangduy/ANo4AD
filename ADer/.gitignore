@@ -1,0 +1,43 @@
+# Data files
+data/mvtec/
+data/btad/
+data/mvtec3d/
+data/visa/
+data/coco/
+data/mpdd/
+data/medical/
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyo
+
+# Compiled Python
+*.so
+
+# Distribution / packaging
+build/
+dist/
+*.egg-info/
+
+# Logs and checkpoints
+logs/
+*.log
+wandb/
+
+# Model weights
+model/pretrain/
+*.pth
+*.pt
+!model/pretrain/.gitkeep
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db
