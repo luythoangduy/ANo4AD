@@ -83,15 +83,12 @@ class cfg(cfg_common, cfg_dataset_default, cfg_model_rd_noising):
             strict=True,
             model_t=self.model_t,
             model_s=self.model_s,
-            # Memory bank configuration
+            # Memory bank configuration (on MFF_OCE fused features: 2048ch, 8x8)
             coreset_sampling_ratio=0.01,
             # Adaptive noise configuration
             n_neighbors=9,
             noise_std_range=(0.01, 0.3),
-            noise_layers=[0, 1, 2],
             enable_noise=True,
-            # Batch size for distance computation (avoid OOM)
-            distance_batch_size=512,
         )
 
         # ==> evaluator

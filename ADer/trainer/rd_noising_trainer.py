@@ -150,10 +150,10 @@ class RDNoisingTrainer(BaseTrainer):
             self.master
         )
         
-        # Log noise info if available
-        if self.noise_info.get('influence_maps'):
-            avg_influence = torch.stack([m.mean() for m in self.noise_info['influence_maps']]).mean()
-            avg_noise_std = torch.stack([m.mean() for m in self.noise_info['noise_std_maps']]).mean()
+        # Log noise info if available (now single map instead of list)
+        if self.noise_info.get('influence_map') is not None:
+            avg_influence = self.noise_info['influence_map'].mean()
+            avg_noise_std = self.noise_info['noise_std_map'].mean()
             update_log_term(self.log_terms.get('influence'), avg_influence.item(), 1, self.master)
             update_log_term(self.log_terms.get('noise_std'), avg_noise_std.item(), 1, self.master)
 

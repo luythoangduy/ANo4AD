@@ -604,12 +604,13 @@ class RD_NOISING(nn.Module):
     """
     RD with Adaptive Noising - Two-Phase Framework.
     
-    Phase 1: Build memory bank from teacher features
+    Phase 1: Build memory bank from MFF_OCE fused features
     Phase 2: Train decoder with adaptive noise injection
     
-    The model uses teacher features to build a memory bank of normal patterns,
-    then uses this memory bank to compute influence scores during training.
-    Adaptive noise is injected based on these influence scores.
+    Key optimization: Uses MFF_OCE output (2048ch, 8x8) instead of 3 separate layers.
+    This reduces computation by ~50x:
+    - Before: 3 memory banks, 64x64 + 32x32 + 16x16 = 5376 positions/image
+    - After: 1 memory bank, 8x8 = 64 positions/image
     """
 
     def __init__(
@@ -619,9 +620,8 @@ class RD_NOISING(nn.Module):
         n_neighbors=9,
         noise_std_range=(0.01, 0.5),
         coreset_sampling_ratio=0.01,
-        noise_layers=[0, 1, 2],  # Which layers to apply noise: 0=layer1, 1=layer2, 2=layer3
         enable_noise=True,
-        distance_batch_size=512,  # Batch size for distance computation (to avoid OOM)
+        distance_batch_size=512,  # Usually not needed with small spatial size
     ):
         super(RD_NOISING, self).__init__()
         
@@ -630,27 +630,24 @@ class RD_NOISING(nn.Module):
         self.mff_oce = MFF_OCE(Bottleneck, 3)
         self.net_s = get_model(model_s)
         
-        # Memory bank configuration
-        self.memory_banks = {}  # Dictionary for multi-scale memory banks
+        # Memory bank configuration - single bank for fused features
+        self.memory_bank = None  # [M, 2048] fused feature memory
         self.coreset_sampling_ratio = coreset_sampling_ratio
         self.memory_bank_built = False
         
         # Noise configuration
-        self.noise_layers = noise_layers
         self.enable_noise = enable_noise
         self.n_neighbors = n_neighbors
         self.noise_std_range = noise_std_range
         
-        # Adaptive noising modules for different feature scales
-        # For wide_resnet50_2 with out_indices=[1, 2, 3]:
-        # - layer1 (index=1): 256 channels  (64x64 spatial)
-        # - layer2 (index=2): 512 channels  (32x32 spatial)
-        # - layer3 (index=3): 1024 channels (16x16 spatial)
-        self.noising_modules = nn.ModuleDict({
-            'layer1': AdaptiveNoisingModule(256, n_neighbors, noise_std_range, distance_batch_size),
-            'layer2': AdaptiveNoisingModule(512, n_neighbors, noise_std_range, distance_batch_size),
-            'layer3': AdaptiveNoisingModule(1024, n_neighbors, noise_std_range, distance_batch_size),
-        })
+        # Single noising module for MFF_OCE output (2048 channels)
+        # MFF_OCE output: [B, 2048, 8, 8] -> only 64 spatial positions!
+        self.noising_module = AdaptiveNoisingModule(
+            feature_dim=2048, 
+            n_neighbors=n_neighbors, 
+            noise_std_range=noise_std_range,
+            distance_batch_size=distance_batch_size
+        )
         
         self.frozen_layers = ['net_t']
 
@@ -674,10 +671,14 @@ class RD_NOISING(nn.Module):
                           sampling_method='auto', max_features_for_greedy=100000,
                           coreset_device='auto'):
         """
-        Phase 1: Build memory banks from teacher features.
+        Phase 1: Build memory bank from MFF_OCE fused features.
         
-        Extracts features from all training images and builds multi-scale
-        memory banks using efficient coreset sampling.
+        Uses the fused feature representation (2048ch, 8x8) which is much more
+        efficient than building separate memory banks for each layer.
+        
+        Memory comparison (for 1000 training images):
+        - Old approach: 3 banks × (64×64 + 32×32 + 16×16) × 1000 = 5.37M vectors
+        - New approach: 1 bank × 8×8 × 1000 = 64K vectors (84x smaller!)
         
         Args:
             train_loader: DataLoader for training data
@@ -685,73 +686,67 @@ class RD_NOISING(nn.Module):
             sampling_method: 'greedy', 'random', 'hybrid', or 'auto'
             max_features_for_greedy: max features before using hybrid sampling
             coreset_device: Device for coreset computation ('cpu', 'cuda', 'auto')
-                - 'auto': GPU if <500k features, else CPU
-                - 'cpu': slower but handles large datasets
-                - 'cuda': faster but may OOM on large datasets
         """
         LOGGER.info('='*50)
-        LOGGER.info('Phase 1: Building Memory Banks from Teacher Features')
+        LOGGER.info('Phase 1: Building Memory Bank from MFF_OCE Features')
         LOGGER.info(f'Coreset device: {coreset_device}')
         LOGGER.info('='*50)
         
         self.net_t.eval()
+        self.mff_oce.eval()
         
-        # Collect features at each scale
-        all_features = {'layer1': [], 'layer2': [], 'layer3': []}
+        # Collect fused features
+        all_features = []
         
         with torch.no_grad():
             for batch_idx, data in enumerate(train_loader):
                 images = data['img'].to(device)
                 
-                # Extract teacher features
+                # Extract teacher features and fuse with MFF_OCE
                 feats_t = self.net_t(images)
+                fused_feat = self.mff_oce(feats_t)  # [B, 2048, 8, 8]
                 
-                # feats_t is list of [B, C, H, W] for each layer
-                # Layer mapping: feats_t[0]=layer1 (64x64), feats_t[1]=layer2 (32x32), feats_t[2]=layer3 (16x16)
-                layer_names = ['layer1', 'layer2', 'layer3']
-                
-                for i, (feat, name) in enumerate(zip(feats_t, layer_names)):
-                    B, C, H, W = feat.shape
-                    # Flatten spatial dimensions and move to CPU to save GPU memory
-                    feat_flat = feat.permute(0, 2, 3, 1).reshape(-1, C).cpu()  # [B*H*W, C]
-                    all_features[name].append(feat_flat)
+                B, C, H, W = fused_feat.shape
+                # Flatten spatial dimensions: [B, 2048, 8, 8] -> [B*64, 2048]
+                feat_flat = fused_feat.permute(0, 2, 3, 1).reshape(-1, C).cpu()
+                all_features.append(feat_flat)
                 
                 if (batch_idx + 1) % 10 == 0:
                     LOGGER.info(f'Processed {batch_idx + 1}/{len(train_loader)} batches')
                     
                 # Clear GPU cache periodically
-                torch.cuda.empty_cache()
+                if (batch_idx + 1) % 50 == 0:
+                    torch.cuda.empty_cache()
         
-        # Build memory bank for each scale
-        for name in all_features:
-            LOGGER.info(f'{name}: Concatenating features...')
-            features = torch.cat(all_features[name], dim=0)  # On CPU
-            LOGGER.info(f'{name}: Total features collected: {features.shape[0]}')
-            
-            # Clear the list to free memory
-            all_features[name] = []
-            
-            # Apply memory-efficient coreset sampling
-            if self.coreset_sampling_ratio < 1.0:
-                features = memory_efficient_coreset_sampling(
-                    features, 
-                    coreset_sampling_ratio=self.coreset_sampling_ratio,
-                    max_features_for_greedy=max_features_for_greedy,
-                    sampling_method=sampling_method,
-                    device=device,  # Final storage device
-                    coreset_device=coreset_device  # Computation device
-                )
-                LOGGER.info(f'{name}: After coreset sampling: {features.shape[0]}')
-            else:
-                features = features.to(device)
-            
-            self.memory_banks[name] = features
-            LOGGER.info(f'{name}: Memory bank shape: {self.memory_banks[name].shape}')
-            
-            # Force garbage collection
-            import gc
-            gc.collect()
-            torch.cuda.empty_cache()
+        # Concatenate all features
+        LOGGER.info('Concatenating features...')
+        features = torch.cat(all_features, dim=0)  # [N_total, 2048]
+        LOGGER.info(f'Total features collected: {features.shape[0]} × {features.shape[1]}')
+        
+        # Clear the list to free memory
+        all_features = []
+        
+        # Apply memory-efficient coreset sampling
+        if self.coreset_sampling_ratio < 1.0:
+            features = memory_efficient_coreset_sampling(
+                features, 
+                coreset_sampling_ratio=self.coreset_sampling_ratio,
+                max_features_for_greedy=max_features_for_greedy,
+                sampling_method=sampling_method,
+                device=device,
+                coreset_device=coreset_device
+            )
+            LOGGER.info(f'After coreset sampling: {features.shape[0]} features')
+        else:
+            features = features.to(device)
+        
+        self.memory_bank = features
+        LOGGER.info(f'Memory bank shape: {self.memory_bank.shape}')
+        
+        # Force garbage collection
+        import gc
+        gc.collect()
+        torch.cuda.empty_cache()
         
         self.memory_bank_built = True
         LOGGER.info('='*50)
@@ -760,7 +755,13 @@ class RD_NOISING(nn.Module):
 
     def forward(self, imgs, apply_noise=None):
         """
-        Forward pass with optional adaptive noise injection.
+        Forward pass with optional adaptive noise injection on MFF_OCE output.
+        
+        Flow:
+        1. Teacher extracts multi-scale features
+        2. MFF_OCE fuses features → [B, 2048, 8, 8]
+        3. Apply adaptive noise based on memory bank influence
+        4. Decoder reconstructs multi-scale features
         
         Args:
             imgs: [B, C, H, W] input images
@@ -775,33 +776,28 @@ class RD_NOISING(nn.Module):
         feats_t = self.net_t(imgs)
         feats_t = [f.detach() for f in feats_t]
         
+        # Fuse features with MFF_OCE
+        fused_feat = self.mff_oce(feats_t)  # [B, 2048, 8, 8]
+        
         # Determine if we should apply noise
         should_apply_noise = apply_noise if apply_noise is not None else self.enable_noise
         should_apply_noise = should_apply_noise and self.training and self.memory_bank_built
         
-        noise_info = {'influence_maps': [], 'noise_std_maps': []}
+        noise_info = {'influence_map': None, 'noise_std_map': None}
         
         if should_apply_noise:
-            # Apply adaptive noise to selected layers
-            noised_feats = []
-            layer_names = ['layer1', 'layer2', 'layer3']
+            # Apply adaptive noise to fused features
+            noised_fused, influence_map, noise_std_map = self.noising_module.apply_adaptive_noise(
+                fused_feat, self.memory_bank
+            )
+            noise_info['influence_map'] = influence_map  # [B, 8, 8]
+            noise_info['noise_std_map'] = noise_std_map  # [B, 8, 8]
             
-            for i, (feat, name) in enumerate(zip(feats_t, layer_names)):
-                if i in self.noise_layers and name in self.memory_banks:
-                    noised_feat, influence_map, noise_std_map = self.noising_modules[name].apply_adaptive_noise(
-                        feat, self.memory_banks[name]
-                    )
-                    noised_feats.append(noised_feat)
-                    noise_info['influence_maps'].append(influence_map)
-                    noise_info['noise_std_maps'].append(noise_std_map)
-                else:
-                    noised_feats.append(feat)
-            
-            # Pass through MFF-OCE and decoder
-            feats_s = self.net_s(self.mff_oce(noised_feats))
+            # Decode noised features
+            feats_s = self.net_s(noised_fused)
         else:
             # Standard forward without noise
-            feats_s = self.net_s(self.mff_oce(feats_t))
+            feats_s = self.net_s(fused_feat)
         
         return feats_t, feats_s, noise_info
 
