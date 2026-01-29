@@ -604,17 +604,18 @@ class RD_NOISING(nn.Module):
     """
     RD with Adaptive Noising - Two-Phase Framework.
     
-    Phase 1: Build memory bank from teacher features (GAP + concat)
-             3 layers: [256] + [512] + [1024] = [1792] per image
+    Phase 1: Build memory bank from MFF_OCE features (GAP)
+             MFF_OCE output: [B, 2048, 8, 8] → GAP → [B, 2048] per image
     Phase 2: Train decoder with adaptive noise injection on MFF_OCE output
     
     Memory bank strategy:
-    - Use GAP on 3 teacher features → 1 vector per image (very compact!)
-    - Memory: 1 × N_images vectors (vs 64 × N_images with MFF_OCE spatial)
+    - Use GAP on MFF_OCE output → 1 vector (2048 dim) per image
+    - Memory: 1 × N_images vectors (compact!)
     
     Noise injection:
-    - Still applied on MFF_OCE output [B, 2048, 8, 8]
-    - Influence computed by comparing MFF_OCE features with GAP-based memory bank
+    - Applied on MFF_OCE output [B, 2048, 8, 8]
+    - Influence computed per spatial position [B*64, 2048] vs memory bank [M, 2048]
+    - Noise varies spatially based on each position's distance to normal
     """
 
     def __init__(
@@ -634,12 +635,11 @@ class RD_NOISING(nn.Module):
         self.mff_oce = MFF_OCE(Bottleneck, 3)
         self.net_s = get_model(model_s)
         
-        # Memory bank configuration - GAP features from 3 teacher layers
-        # Layer sizes: 256 + 512 + 1024 = 1792
-        self.memory_bank = None  # [M, 1792] GAP feature memory
+        # Memory bank configuration - GAP of MFF_OCE output
+        # MFF_OCE output: [B, 2048, 8, 8] → GAP → [B, 2048]
+        self.memory_bank = None  # [M, 2048] GAP feature memory
         self.coreset_sampling_ratio = coreset_sampling_ratio
         self.memory_bank_built = False
-        self.gap_feature_dim = 256 + 512 + 1024  # 1792
         
         # Noise configuration
         self.enable_noise = enable_noise
@@ -647,17 +647,9 @@ class RD_NOISING(nn.Module):
         self.noise_std_range = noise_std_range
         
         # Noising module for MFF_OCE output (2048 channels)
-        # But influence is computed from GAP features (1792 dim)
+        # Used for spatial influence computation
         self.noising_module = AdaptiveNoisingModule(
-            feature_dim=2048,  # For MFF_OCE output
-            n_neighbors=n_neighbors, 
-            noise_std_range=noise_std_range,
-            distance_batch_size=distance_batch_size
-        )
-        
-        # Separate module for GAP-based influence computation
-        self.gap_influence_module = AdaptiveNoisingModule(
-            feature_dim=self.gap_feature_dim,  # 1792 for GAP features
+            feature_dim=2048,  # MFF_OCE output dimension
             n_neighbors=n_neighbors, 
             noise_std_range=noise_std_range,
             distance_batch_size=distance_batch_size
@@ -685,16 +677,16 @@ class RD_NOISING(nn.Module):
                           sampling_method='auto', max_features_for_greedy=100000,
                           coreset_device='auto'):
         """
-        Phase 1: Build memory bank from teacher features using GAP + concat.
+        Phase 1: Build memory bank from MFF_OCE features using GAP.
         
         Strategy:
-        - Apply Global Average Pooling to each teacher feature layer
-        - Concat: [B, 256] + [B, 512] + [B, 1024] = [B, 1792]
-        - Results in 1 vector per image (very compact memory bank!)
+        - Extract MFF_OCE output [B, 2048, 8, 8]
+        - Apply GAP → [B, 2048] per image
+        - Results in 1 vector per image (compact memory bank!)
         
         Memory comparison (for 1000 training images):
         - Old MFF_OCE spatial: 8×8 × 1000 = 64K vectors × 2048 dim
-        - New GAP approach: 1 × 1000 = 1K vectors × 1792 dim (64x fewer vectors!)
+        - New GAP approach: 1 × 1000 = 1K vectors × 2048 dim (64x fewer vectors!)
         
         Args:
             train_loader: DataLoader for training data
@@ -704,33 +696,28 @@ class RD_NOISING(nn.Module):
             coreset_device: Device for coreset computation ('cpu', 'cuda', 'auto')
         """
         LOGGER.info('='*50)
-        LOGGER.info('Phase 1: Building Memory Bank from GAP Features')
-        LOGGER.info(f'Feature dim: {self.gap_feature_dim} (256 + 512 + 1024)')
+        LOGGER.info('Phase 1: Building Memory Bank from MFF_OCE GAP Features')
+        LOGGER.info(f'Feature dim: 2048')
         LOGGER.info(f'Coreset device: {coreset_device}')
         LOGGER.info('='*50)
         
         self.net_t.eval()
+        self.mff_oce.eval()
         
-        # Collect GAP features
+        # Collect GAP features from MFF_OCE output
         all_features = []
         
         with torch.no_grad():
             for batch_idx, data in enumerate(train_loader):
                 images = data['img'].to(device)
                 
-                # Extract teacher features
-                feats_t = self.net_t(images)  # List of [B,256,64,64], [B,512,32,32], [B,1024,16,16]
+                # Extract teacher features and fuse with MFF_OCE
+                feats_t = self.net_t(images)
+                fused_feat = self.mff_oce(feats_t)  # [B, 2048, 8, 8]
                 
-                # Apply GAP to each layer and concat
-                gap_features = []
-                for feat in feats_t:
-                    # Global Average Pooling: [B, C, H, W] -> [B, C]
-                    gap = F.adaptive_avg_pool2d(feat, 1).flatten(1)
-                    gap_features.append(gap)
-                
-                # Concat: [B, 256] + [B, 512] + [B, 1024] = [B, 1792]
-                concat_feat = torch.cat(gap_features, dim=1).cpu()  # [B, 1792]
-                all_features.append(concat_feat)
+                # Apply GAP: [B, 2048, 8, 8] -> [B, 2048]
+                gap_feat = F.adaptive_avg_pool2d(fused_feat, 1).flatten(1).cpu()
+                all_features.append(gap_feat)
                 
                 if (batch_idx + 1) % 10 == 0:
                     LOGGER.info(f'Processed {batch_idx + 1}/{len(train_loader)} batches')
@@ -741,7 +728,7 @@ class RD_NOISING(nn.Module):
         
         # Concatenate all features
         LOGGER.info('Concatenating features...')
-        features = torch.cat(all_features, dim=0)  # [N_images, 1792]
+        features = torch.cat(all_features, dim=0)  # [N_images, 2048]
         LOGGER.info(f'Total features collected: {features.shape[0]} images × {features.shape[1]} dim')
         
         # Clear the list to free memory
@@ -780,9 +767,9 @@ class RD_NOISING(nn.Module):
         
         Flow:
         1. Teacher extracts multi-scale features
-        2. Compute GAP features for influence calculation against memory bank
-        3. MFF_OCE fuses features → [B, 2048, 8, 8]
-        4. Apply adaptive noise based on GAP-computed influence
+        2. MFF_OCE fuses features → [B, 2048, 8, 8]
+        3. Compute influence per spatial position vs memory bank (GAP)
+        4. Apply spatially-varying noise based on influence
         5. Decoder reconstructs multi-scale features
         
         Args:
@@ -792,7 +779,7 @@ class RD_NOISING(nn.Module):
         Returns:
             feats_t: List of teacher features
             feats_s: List of student (decoder) features
-            noise_info: Dict with influence and noise info (if noise applied)
+            noise_info: Dict with influence and noise maps (if noise applied)
         """
         # Extract teacher features
         feats_t = self.net_t(imgs)
@@ -805,35 +792,16 @@ class RD_NOISING(nn.Module):
         should_apply_noise = apply_noise if apply_noise is not None else self.enable_noise
         should_apply_noise = should_apply_noise and self.training and self.memory_bank_built
         
-        noise_info = {'influence': None, 'noise_std': None}
+        noise_info = {'influence_map': None, 'noise_std_map': None}
         
         if should_apply_noise:
-            B, C, H, W = fused_feat.shape
-            
-            # Step 1: Compute GAP features for influence calculation
-            gap_features = []
-            for feat in feats_t:
-                gap = F.adaptive_avg_pool2d(feat, 1).flatten(1)  # [B, C_layer]
-                gap_features.append(gap)
-            gap_concat = torch.cat(gap_features, dim=1)  # [B, 1792]
-            
-            # Step 2: Compute influence from GAP features vs memory bank
-            # This gives per-image influence/noise_std based on how far from normal
-            influence_gap, noise_std_gap, knn_dist = self.gap_influence_module(
-                gap_concat, self.memory_bank
-            )  # [B, 1792], [B, 1792], [B, K]
-            
-            # Step 3: Compute mean noise_std per image (scalar per image)
-            # Then expand to all spatial positions of MFF_OCE output
-            noise_std_per_image = noise_std_gap.mean(dim=1, keepdim=True)  # [B, 1]
-            noise_std_expanded = noise_std_per_image.view(B, 1, 1, 1).expand(B, C, H, W)
-            
-            # Step 4: Apply noise to MFF_OCE output
-            noise = torch.randn_like(fused_feat) * noise_std_expanded
-            noised_fused = fused_feat + noise
-            
-            noise_info['influence'] = influence_gap.mean().item()
-            noise_info['noise_std'] = noise_std_per_image.mean().item()
+            # Apply adaptive noise with spatial variation
+            # Uses noising_module.apply_adaptive_noise which computes per-position influence
+            noised_fused, influence_map, noise_std_map = self.noising_module.apply_adaptive_noise(
+                fused_feat, self.memory_bank
+            )
+            noise_info['influence_map'] = influence_map  # [B, 8, 8]
+            noise_info['noise_std_map'] = noise_std_map  # [B, 8, 8]
             
             # Decode noised features
             feats_s = self.net_s(noised_fused)

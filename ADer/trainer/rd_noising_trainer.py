@@ -150,10 +150,12 @@ class RDNoisingTrainer(BaseTrainer):
             self.master
         )
         
-        # Log noise info if available
-        if self.noise_info.get('influence') is not None:
-            update_log_term(self.log_terms.get('influence'), self.noise_info['influence'], 1, self.master)
-            update_log_term(self.log_terms.get('noise_std'), self.noise_info['noise_std'], 1, self.master)
+        # Log noise info if available (spatial maps)
+        if self.noise_info.get('influence_map') is not None:
+            avg_influence = self.noise_info['influence_map'].mean()
+            avg_noise_std = self.noise_info['noise_std_map'].mean()
+            update_log_term(self.log_terms.get('influence'), avg_influence.item(), 1, self.master)
+            update_log_term(self.log_terms.get('noise_std'), avg_noise_std.item(), 1, self.master)
 
     def train(self):
         """Training loop with two phases."""
