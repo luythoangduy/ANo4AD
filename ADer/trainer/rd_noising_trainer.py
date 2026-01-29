@@ -386,10 +386,10 @@ class RDNoisingTrainer(BaseTrainer):
             # Get model state
             if self.cfg.dist:
                 net_state = trans_state_dict(self.net.module.state_dict(), dist=False)
-                memory_banks = self.net.module.memory_banks
+                memory_bank = self.net.module.memory_bank
             else:
                 net_state = trans_state_dict(self.net.state_dict(), dist=False)
-                memory_banks = self.net.memory_banks
+                memory_bank = self.net.memory_bank
             
             checkpoint_info = {
                 'net': net_state,
@@ -401,7 +401,7 @@ class RDNoisingTrainer(BaseTrainer):
                 'metric_recorder': self.metric_recorder,
                 'total_time': self.cfg.total_time,
                 'memory_bank_built': self.memory_bank_built,
-                'memory_banks': {k: v.cpu() for k, v in memory_banks.items()},
+                'memory_bank': memory_bank.cpu() if memory_bank is not None else None,
             }
             
             save_path = f'{self.cfg.logdir}/ckpt.pth'
@@ -435,14 +435,14 @@ class RDNoisingTrainer(BaseTrainer):
         else:
             self.net.load_state_dict(checkpoint['net'])
         
-        # Load memory banks
-        if 'memory_banks' in checkpoint:
+        # Load memory bank (single fused feature bank)
+        if 'memory_bank' in checkpoint and checkpoint['memory_bank'] is not None:
             device = f'cuda:{self.cfg.local_rank}'
             if self.cfg.dist:
-                self.net.module.memory_banks = {k: v.to(device) for k, v in checkpoint['memory_banks'].items()}
+                self.net.module.memory_bank = checkpoint['memory_bank'].to(device)
                 self.net.module.memory_bank_built = checkpoint.get('memory_bank_built', True)
             else:
-                self.net.memory_banks = {k: v.to(device) for k, v in checkpoint['memory_banks'].items()}
+                self.net.memory_bank = checkpoint['memory_bank'].to(device)
                 self.net.memory_bank_built = checkpoint.get('memory_bank_built', True)
             self.memory_bank_built = checkpoint.get('memory_bank_built', True)
         
