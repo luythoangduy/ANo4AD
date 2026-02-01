@@ -532,6 +532,43 @@ class AdaptiveNoisingModule(nn.Module):
         
         return influence, knn_distances
 
+    def propose_adaptive_noise_std(self, influence, knn_distances):
+        """
+        Propose adaptive noise std based on influence and distances.
+        
+        Strategy:
+        - High influence dims → larger noise (more sensitive to change)
+        - Far from normal → larger noise (more anomalous)
+        
+        Args:
+            influence: [N, D] influence per dimension
+            knn_distances: [N, K] distances to K neighbors
+            
+        Returns:
+            noise_std: [N, D] proposed noise std per dimension
+        """
+        # Normalize influence to [0, 1] range per sample
+        influence_min = influence.min(dim=-1, keepdim=True)[0]
+        influence_max = influence.max(dim=-1, keepdim=True)[0]
+        influence_norm = (influence - influence_min) / (influence_max - influence_min + 1e-8)
+        
+        # Distance signal: mean distance to neighbors, expanded to all dims
+        distance_signal = knn_distances.mean(dim=-1, keepdim=True)  # [N, 1]
+        
+        # Normalize distance signal
+        dist_min, dist_max = distance_signal.min(), distance_signal.max()
+        distance_norm = (distance_signal - dist_min) / (dist_max - dist_min + 1e-8)
+        distance_norm = distance_norm.expand_as(influence_norm)  # [N, D]
+        
+        # Combine signals with learnable scaling
+        combined = self.influence_scale * influence_norm + self.distance_scale * distance_norm
+        
+        # Map to noise std range using sigmoid
+        min_std, max_std = self.noise_std_range
+        noise_std = min_std + (max_std - min_std) * torch.sigmoid(combined - 0.5)
+        
+        return noise_std
+
     def apply_adaptive_noise(self, features, memory_bank):
         """
         Apply adaptive noise to features based on memory bank influence.
