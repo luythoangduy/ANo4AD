@@ -56,7 +56,7 @@ class DeBottleneck(nn.Module):
     expansion = 4
 
     def __init__(self, inplanes, planes, stride=1, upsample=None, groups=1,
-                 base_width=64, dilation=1, norm_layer=None, num_groups=32):
+                 base_width=64, dilation=1, norm_layer=None, num_groups=1):
         super(DeBottleneck, self).__init__()
         # Use GroupNorm for stability with small batches in AD
         if norm_layer is None:
@@ -102,7 +102,7 @@ class DecoderResNet(nn.Module):
     Uses GroupNorm for stability with small batch sizes in AD.
     """
 
-    def __init__(self, block, layers, width_per_group=64, norm_layer=None, num_groups=32):
+    def __init__(self, block, layers, width_per_group=64, norm_layer=None, num_groups=1):
         super(DecoderResNet, self).__init__()
         # Use GroupNorm for stability with small batches
         if norm_layer is None:
@@ -161,7 +161,7 @@ class MFF_OCE(nn.Module):
     Uses GroupNorm for stability with small batch sizes in AD.
     """
 
-    def __init__(self, block, layers, width_per_group=64, norm_layer=None, num_groups=32):
+    def __init__(self, block, layers, width_per_group=64, norm_layer=None, num_groups=1):
         super(MFF_OCE, self).__init__()
         # Use GroupNorm for stability with small batches
         if norm_layer is None:
@@ -625,9 +625,10 @@ class RDPP_NOISING(nn.Module):
         self.proj_layer = MultiProjectionLayer(base=proj_base)
         self.proj_loss = Revisit_RDLoss()
         
-        # Adaptive noising
+        # Adaptive noising - uses last teacher layer features (1024 for wide_resnet50)
+        # feature_dim should match feats_t[-1] channel count
         self.noising_module = AdaptiveNoisingModule(
-            feature_dim=2048,
+            feature_dim=1024,  # Last teacher layer: 1024 channels for wide_resnet50
             n_neighbors=n_neighbors,
             noise_std_range=noise_std_range,
         )
@@ -672,6 +673,9 @@ class RDPP_NOISING(nn.Module):
                           max_features_for_greedy=100000, coreset_device='auto'):
         """
         Build memory bank from training data.
+        
+        Stores GAP features from the last layer of teacher encoder (1024 channels for wide_resnet50).
+        This matches the dimension used in _apply_adaptive_noise_to_feats.
         """
         if self.memory_bank_built:
             LOGGER.info('Memory bank already built, skipping...')
@@ -682,7 +686,6 @@ class RDPP_NOISING(nn.Module):
         LOGGER.info('='*50)
         
         self.net_t.eval()
-        self.mff_oce.eval()
         
         all_features = []
         
@@ -691,9 +694,13 @@ class RDPP_NOISING(nn.Module):
                 images = data['img'].to(device)
                 
                 feats_t = self.net_t(images)
-                fused_feat = self.mff_oce(feats_t)
                 
-                gap_feat = F.adaptive_avg_pool2d(fused_feat, 1).flatten(1).cpu()
+                # Use last layer features (1024 channels for wide_resnet50)
+                # This matches the reference feature in _apply_adaptive_noise_to_feats
+                ref_feat = feats_t[-1]  # [B, 1024, 16, 16]
+                
+                # GAP to get compact representation
+                gap_feat = F.adaptive_avg_pool2d(ref_feat, 1).flatten(1).cpu()  # [B, 1024]
                 all_features.append(gap_feat)
                 
                 if (batch_idx + 1) % 10 == 0:
@@ -733,59 +740,35 @@ class RDPP_NOISING(nn.Module):
         LOGGER.info('Memory Bank Construction Complete!')
         LOGGER.info('='*50)
 
-    def _apply_adaptive_noise_to_features(self, feats_t, noise_std_map):
-        """
-        Apply TRULY adaptive noise to multi-scale teacher features.
-        
-        Instead of using mean() of noise_std_map (which loses position information),
-        upscale the noise_std_map to each feature's spatial resolution and apply
-        noise per-position.
-        
-        Args:
-            feats_t: List of teacher features at different scales
-                     [feat1: B,C1,H1,W1], [feat2: B,C2,H2,W2], [feat3: B,C3,H3,W3]
-            noise_std_map: [B, H, W] noise std per spatial position (from MFF output size)
-        
-        Returns:
-            noised_feats: List of noised features with same shapes as input
-        """
-        noised_feats = []
-        
-        for feat in feats_t:
-            B, C, H_f, W_f = feat.shape
-            
-            # Upsample noise_std_map to match this feature's spatial size
-            # noise_std_map: [B, H, W] -> [B, 1, H_f, W_f]
-            noise_std_upsampled = F.interpolate(
-                noise_std_map.unsqueeze(1),  # [B, 1, H, W]
-                size=(H_f, W_f),
-                mode='bilinear',
-                align_corners=False
-            )  # [B, 1, H_f, W_f]
-            
-            # Generate noise with spatially-varying std
-            # noise_std_upsampled broadcasts across channels
-            noise = torch.randn_like(feat) * noise_std_upsampled
-            
-            noised_feats.append(feat + noise)
-        
-        return noised_feats
-
     def forward(self, imgs, img_noise=None, apply_noise=None):
         """
-        Forward pass.
+        Forward pass with RD++ architecture + Adaptive Noising.
+        
+        RD++ Original Flow:
+        1. feats_t = net_t(imgs)
+        2. inputs_noise = net_t(img_noise)  <-- External noised image
+        3. (proj_noise, proj_clean) = proj_layer(feats_t, features_noise=inputs_noise)
+        4. L_proj = proj_loss(inputs_noise, proj_noise, proj_clean)
+        5. feats_s = net_s(mff_oce(proj_clean))
+        
+        RDPP_NOISING Flow (Adaptive Noise):
+        1. feats_t = net_t(imgs)
+        2. noised_feats_t = apply_adaptive_noise(feats_t)  <-- Memory bank based
+        3. (proj_noise, proj_clean) = proj_layer(feats_t, features_noise=noised_feats_t)
+        4. L_proj = proj_loss(noised_feats_t, proj_noise, proj_clean)
+        5. feats_s = net_s(mff_oce(proj_clean))
         
         Args:
             imgs: [B, C, H, W] input images
-            img_noise: [B, C, H, W] noised input (for RD++ external noise, optional)
+            img_noise: [B, C, H, W] noised input (for original RD++ mode, optional)
             apply_noise: Override for adaptive noise application
         
         Returns:
             feats_t: List of teacher features
-            feats_s: List of student features
-            L_proj: Projection loss (if training) or noise_info (if using adaptive noise)
+            feats_s: List of student features  
+            L_proj: Projection loss (if training)
         """
-        # Extract teacher features
+        # 1. Extract teacher features
         feats_t = self.net_t(imgs)
         
         if self.training:
@@ -795,30 +778,27 @@ class RDPP_NOISING(nn.Module):
             ) and self.memory_bank_built
             
             if should_apply_adaptive_noise:
-                # Use adaptive noise based on memory bank
-                features = self.proj_layer(feats_t)
-                fused_feat = self.mff_oce(features)
+                # === RD++ with Adaptive Noise (Memory Bank based) ===
                 
-                # Apply adaptive noise to fused features
-                noised_fused, influence_map, noise_std_map = self.noising_module.apply_adaptive_noise(
-                    fused_feat, self.memory_bank
+                # 2. Apply adaptive noise to teacher features
+                # This replaces the external img_noise path
+                noised_feats_t = self._apply_adaptive_noise_to_feats(feats_t)
+                
+                # 3. Projection layer: project both clean and noised features
+                feature_space_noise, feature_space = self.proj_layer(
+                    feats_t, features_noise=noised_feats_t
                 )
                 
-                # Apply TRULY adaptive noise to teacher features (per-position, not mean)
-                # Upscale noise_std_map to each feature's spatial resolution
-                noised_features = self._apply_adaptive_noise_to_features(feats_t, noise_std_map)
+                # 4. Compute RD++ projection loss
+                L_proj = self.proj_loss(noised_feats_t, feature_space_noise, feature_space)
                 
-                # Projection
-                feature_space_noise, feature_space = self.proj_layer(feats_t, features_noise=noised_features)
-                L_proj = self.proj_loss(noised_features, feature_space_noise, feature_space)
-                
-                # Decode
-                feats_s = self.net_s(noised_fused)
+                # 5. Decode from clean projected features through MFF_OCE
+                feats_s = self.net_s(self.mff_oce(feature_space))
                 
                 return feats_t, feats_s, L_proj
             
             elif img_noise is not None:
-                # Use external noise (original RD++ mode)
+                # === Original RD++ mode with external noise ===
                 inputs_noise = self.net_t(img_noise)
                 feature_space_noise, feature_space = self.proj_layer(feats_t, features_noise=inputs_noise)
                 L_proj = self.proj_loss(inputs_noise, feature_space_noise, feature_space)
@@ -826,16 +806,69 @@ class RDPP_NOISING(nn.Module):
                 return feats_t, feats_s, L_proj
             
             else:
-                # No noise mode
+                # === No noise mode ===
                 features = self.proj_layer(feats_t)
                 feats_s = self.net_s(self.mff_oce(features))
                 return feats_t, feats_s, torch.tensor(0.0, device=imgs.device)
         
         else:
-            # Inference mode
+            # === Inference mode ===
             features = self.proj_layer(feats_t)
             feats_s = self.net_s(self.mff_oce(features))
             return feats_t, feats_s, None
+    
+    def _apply_adaptive_noise_to_feats(self, feats_t):
+        """
+        Apply adaptive noise to multi-scale teacher features.
+        
+        Computes influence from memory bank (which stores GAP features of MFF output)
+        and applies spatially-varying noise to each scale of teacher features.
+        
+        Args:
+            feats_t: List of teacher features at different scales
+                     [feat1: B,C1,H1,W1], [feat2: B,C2,H2,W2], [feat3: B,C3,H3,W3]
+        
+        Returns:
+            noised_feats: List of noised features with same shapes as input
+        """
+        # First, compute influence using the largest scale feature (last one, 1024 channels)
+        # or use a representative feature to get noise std map
+        ref_feat = feats_t[-1]  # [B, 1024, 16, 16] for wide_resnet50
+        B, C_ref, H_ref, W_ref = ref_feat.shape
+        
+        # Flatten for influence computation
+        ref_flat = ref_feat.permute(0, 2, 3, 1).reshape(-1, C_ref)  # [B*H*W, C]
+        
+        # Compute influence using analytical gradient
+        influence, knn_distances = self.noising_module.compute_influence_analytical(
+            ref_flat, self.memory_bank
+        )
+        
+        # Get noise std from influence
+        noise_std = self.noising_module.propose_adaptive_noise_std(influence, knn_distances)
+        
+        # Mean noise std per spatial position
+        noise_std_per_pos = noise_std.mean(dim=1)  # [B*H*W]
+        noise_std_map = noise_std_per_pos.reshape(B, H_ref, W_ref)  # [B, H_ref, W_ref]
+        
+        # Apply noise to each scale with upsampled noise_std_map
+        noised_feats = []
+        for feat in feats_t:
+            _, C, H_f, W_f = feat.shape
+            
+            # Upsample noise_std_map to match this feature's spatial size
+            noise_std_upsampled = F.interpolate(
+                noise_std_map.unsqueeze(1),  # [B, 1, H_ref, W_ref]
+                size=(H_f, W_f),
+                mode='bilinear',
+                align_corners=False
+            )  # [B, 1, H_f, W_f]
+            
+            # Generate and apply noise
+            noise = torch.randn_like(feat) * noise_std_upsampled
+            noised_feats.append(feat + noise)
+        
+        return noised_feats
 
 
 @MODEL.register_module
