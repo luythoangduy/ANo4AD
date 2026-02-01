@@ -71,22 +71,28 @@ class RDPPNoisingTrainer(BaseTrainer):
         self.max_features_for_greedy = getattr(cfg.trainer, 'max_features_for_greedy', 100000)
         self.coreset_device = getattr(cfg.trainer, 'coreset_device', 'auto')
         
+        # Get the actual network (handle DDP wrapper)
+        if hasattr(self.net, 'module'):
+            net_for_optim = self.net.module
+        else:
+            net_for_optim = self.net
+        
         # RD++ specific optimizers
         self.optim.proj_opt = get_optim(
             cfg.optim.proj_opt.kwargs if hasattr(cfg.optim, 'proj_opt') else cfg.optim.kwargs,
-            self.net.proj_layer,
+            net_for_optim.proj_layer,
             lr=cfg.optim.lr
         )
         
         # Temporarily remove proj_layer to create distill optimizer for other components
-        proj_layer = self.net.proj_layer
-        self.net.proj_layer = None
+        proj_layer = net_for_optim.proj_layer
+        net_for_optim.proj_layer = None
         self.optim.distill_opt = get_optim(
             cfg.optim.distill_opt.kwargs if hasattr(cfg.optim, 'distill_opt') else cfg.optim.kwargs,
-            self.net,
+            net_for_optim,
             lr=cfg.optim.lr * 5
         )
-        self.net.proj_layer = proj_layer
+        net_for_optim.proj_layer = proj_layer
         
         log_msg(self.logger, '='*50)
         log_msg(self.logger, 'RD++ Noising Trainer Initialized')
@@ -210,14 +216,22 @@ class RDPPNoisingTrainer(BaseTrainer):
                 1, self.master
             )
 
-    def train_epoch(self):
-        """Train one epoch with memory bank building if needed."""
-        # Build memory bank before first epoch if not already built
-        if not self.memory_bank_built and self.noise_enabled:
+    def train(self):
+        """
+        Override train method to build memory bank before training.
+        """
+        # Phase 1: Build memory bank BEFORE training starts
+        if self.noise_enabled and not self.memory_bank_built:
+            log_msg(self.logger, '='*60)
+            log_msg(self.logger, 'PHASE 1: Building Memory Bank (Coreset Sampling)')
+            log_msg(self.logger, '='*60)
             self.build_memory_bank()
+            log_msg(self.logger, '='*60)
+            log_msg(self.logger, 'PHASE 2: Starting Training with Adaptive Noise')
+            log_msg(self.logger, '='*60)
         
-        # Call parent's train_epoch
-        super().train_epoch()
+        # Phase 2: Normal training (call parent's train method)
+        super().train()
 
     @torch.no_grad()
     def test(self):
