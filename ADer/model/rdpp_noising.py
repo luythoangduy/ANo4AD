@@ -49,21 +49,14 @@ def deconv2x2(in_planes, out_planes, stride=1, groups=1, dilation=1):
 
 
 class DeBottleneck(nn.Module):
-    """
-    Decoder bottleneck block for reverse distillation.
-    Uses GroupNorm instead of BatchNorm for stability with small batch sizes.
-    """
+    """Decoder bottleneck block for reverse distillation."""
     expansion = 4
 
     def __init__(self, inplanes, planes, stride=1, upsample=None, groups=1,
-                 base_width=64, dilation=1, norm_layer=None, num_groups=1):
+                 base_width=64, dilation=1, norm_layer=None):
         super(DeBottleneck, self).__init__()
-        # Use GroupNorm for stability with small batches in AD
         if norm_layer is None:
-            norm_layer = lambda num_channels: nn.GroupNorm(
-                num_groups=min(num_groups, num_channels), 
-                num_channels=num_channels
-            )
+            norm_layer = nn.BatchNorm2d
         width = int(planes * (base_width / 64.)) * groups
         
         self.conv1 = conv1x1(inplanes, width)
@@ -97,19 +90,12 @@ class DeBottleneck(nn.Module):
 
 
 class DecoderResNet(nn.Module):
-    """
-    Decoder network that mirrors the encoder structure.
-    Uses GroupNorm for stability with small batch sizes in AD.
-    """
+    """Decoder network that mirrors the encoder structure."""
 
-    def __init__(self, block, layers, width_per_group=64, norm_layer=None, num_groups=1):
+    def __init__(self, block, layers, width_per_group=64, norm_layer=None):
         super(DecoderResNet, self).__init__()
-        # Use GroupNorm for stability with small batches
         if norm_layer is None:
-            norm_layer = lambda num_channels: nn.GroupNorm(
-                num_groups=min(num_groups, num_channels), 
-                num_channels=num_channels
-            )
+            norm_layer = nn.BatchNorm2d
         self._norm_layer = norm_layer
         self.inplanes = 512 * block.expansion
         self.dilation = 1
@@ -122,7 +108,7 @@ class DecoderResNet(nn.Module):
         for m in self.modules():
             if isinstance(m, nn.Conv2d):
                 nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
-            elif isinstance(m, nn.GroupNorm):
+            elif isinstance(m, (nn.BatchNorm2d, nn.GroupNorm)):
                 nn.init.constant_(m.weight, 1)
                 nn.init.constant_(m.bias, 0)
 
@@ -156,19 +142,12 @@ class DecoderResNet(nn.Module):
 
 # ========== MFF & OCE ==========
 class MFF_OCE(nn.Module):
-    """
-    Multi-scale Feature Fusion and One-Class Embedding.
-    Uses GroupNorm for stability with small batch sizes in AD.
-    """
+    """Multi-scale Feature Fusion and One-Class Embedding."""
 
-    def __init__(self, block, layers, width_per_group=64, norm_layer=None, num_groups=1):
+    def __init__(self, block, layers, width_per_group=64, norm_layer=None):
         super(MFF_OCE, self).__init__()
-        # Use GroupNorm for stability with small batches
         if norm_layer is None:
-            norm_layer = lambda num_channels: nn.GroupNorm(
-                num_groups=min(num_groups, num_channels), 
-                num_channels=num_channels
-            )
+            norm_layer = nn.BatchNorm2d
         self._norm_layer = norm_layer
         self.base_width = width_per_group
         self.inplanes = 256 * block.expansion
@@ -186,7 +165,7 @@ class MFF_OCE(nn.Module):
         for m in self.modules():
             if isinstance(m, nn.Conv2d):
                 nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
-            elif isinstance(m, nn.GroupNorm):
+            elif isinstance(m, (nn.BatchNorm2d, nn.GroupNorm)):
                 nn.init.constant_(m.weight, 1)
                 nn.init.constant_(m.bias, 0)
 
