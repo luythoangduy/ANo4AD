@@ -45,6 +45,9 @@ class cfg(cfg_common, cfg_dataset_default, cfg_model_rd_noising):
         self.data.type = 'DefaultAD'
         self.data.root = 'data/mvtec'
         self.data.meta = 'meta.json'
+        self.data.use_sample = False
+        self.data.views = []  # ['C1', 'C2', 'C3', 'C4', 'C5']
+
         self.data.cls_names = []
 
         self.data.train_transforms = [
@@ -73,7 +76,7 @@ class cfg(cfg_common, cfg_dataset_default, cfg_model_rd_noising):
         )
         self.model_s = Namespace()
         self.model_s.name = 'de_wide_resnet50_2'
-        self.model_s.kwargs = dict(pretrained=False, checkpoint_path='', strict=False)
+        self.model_s.kwargs = dict(pretrained=False, checkpoint_path='', strict=True)
         
         self.model = Namespace()
         self.model.name = 'rd_noising'

@@ -49,14 +49,21 @@ def deconv2x2(in_planes, out_planes, stride=1, groups=1, dilation=1):
 
 
 class DeBottleneck(nn.Module):
-    """Decoder bottleneck block for reverse distillation."""
+    """
+    Decoder bottleneck block for reverse distillation.
+    Uses GroupNorm instead of BatchNorm for stability with small batch sizes.
+    """
     expansion = 4
 
     def __init__(self, inplanes, planes, stride=1, upsample=None, groups=1,
-                 base_width=64, dilation=1, norm_layer=None):
+                 base_width=64, dilation=1, norm_layer=None, num_groups=32):
         super(DeBottleneck, self).__init__()
+        # Use GroupNorm for stability with small batches in AD
         if norm_layer is None:
-            norm_layer = nn.BatchNorm2d
+            norm_layer = lambda num_channels: nn.GroupNorm(
+                num_groups=min(num_groups, num_channels), 
+                num_channels=num_channels
+            )
         width = int(planes * (base_width / 64.)) * groups
         
         self.conv1 = conv1x1(inplanes, width)
@@ -90,12 +97,19 @@ class DeBottleneck(nn.Module):
 
 
 class DecoderResNet(nn.Module):
-    """Decoder network that mirrors the encoder structure."""
+    """
+    Decoder network that mirrors the encoder structure.
+    Uses GroupNorm for stability with small batch sizes in AD.
+    """
 
-    def __init__(self, block, layers, width_per_group=64, norm_layer=None):
+    def __init__(self, block, layers, width_per_group=64, norm_layer=None, num_groups=32):
         super(DecoderResNet, self).__init__()
+        # Use GroupNorm for stability with small batches
         if norm_layer is None:
-            norm_layer = nn.BatchNorm2d
+            norm_layer = lambda num_channels: nn.GroupNorm(
+                num_groups=min(num_groups, num_channels), 
+                num_channels=num_channels
+            )
         self._norm_layer = norm_layer
         self.inplanes = 512 * block.expansion
         self.dilation = 1
@@ -108,7 +122,7 @@ class DecoderResNet(nn.Module):
         for m in self.modules():
             if isinstance(m, nn.Conv2d):
                 nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
-            elif isinstance(m, (nn.BatchNorm2d, nn.GroupNorm)):
+            elif isinstance(m, nn.GroupNorm):
                 nn.init.constant_(m.weight, 1)
                 nn.init.constant_(m.bias, 0)
 
@@ -142,12 +156,19 @@ class DecoderResNet(nn.Module):
 
 # ========== MFF & OCE ==========
 class MFF_OCE(nn.Module):
-    """Multi-scale Feature Fusion and One-Class Embedding."""
+    """
+    Multi-scale Feature Fusion and One-Class Embedding.
+    Uses GroupNorm for stability with small batch sizes in AD.
+    """
 
-    def __init__(self, block, layers, width_per_group=64, norm_layer=None):
+    def __init__(self, block, layers, width_per_group=64, norm_layer=None, num_groups=32):
         super(MFF_OCE, self).__init__()
+        # Use GroupNorm for stability with small batches
         if norm_layer is None:
-            norm_layer = nn.BatchNorm2d
+            norm_layer = lambda num_channels: nn.GroupNorm(
+                num_groups=min(num_groups, num_channels), 
+                num_channels=num_channels
+            )
         self._norm_layer = norm_layer
         self.base_width = width_per_group
         self.inplanes = 256 * block.expansion
@@ -165,7 +186,7 @@ class MFF_OCE(nn.Module):
         for m in self.modules():
             if isinstance(m, nn.Conv2d):
                 nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
-            elif isinstance(m, (nn.BatchNorm2d, nn.GroupNorm)):
+            elif isinstance(m, nn.GroupNorm):
                 nn.init.constant_(m.weight, 1)
                 nn.init.constant_(m.bias, 0)
 
@@ -712,6 +733,44 @@ class RDPP_NOISING(nn.Module):
         LOGGER.info('Memory Bank Construction Complete!')
         LOGGER.info('='*50)
 
+    def _apply_adaptive_noise_to_features(self, feats_t, noise_std_map):
+        """
+        Apply TRULY adaptive noise to multi-scale teacher features.
+        
+        Instead of using mean() of noise_std_map (which loses position information),
+        upscale the noise_std_map to each feature's spatial resolution and apply
+        noise per-position.
+        
+        Args:
+            feats_t: List of teacher features at different scales
+                     [feat1: B,C1,H1,W1], [feat2: B,C2,H2,W2], [feat3: B,C3,H3,W3]
+            noise_std_map: [B, H, W] noise std per spatial position (from MFF output size)
+        
+        Returns:
+            noised_feats: List of noised features with same shapes as input
+        """
+        noised_feats = []
+        
+        for feat in feats_t:
+            B, C, H_f, W_f = feat.shape
+            
+            # Upsample noise_std_map to match this feature's spatial size
+            # noise_std_map: [B, H, W] -> [B, 1, H_f, W_f]
+            noise_std_upsampled = F.interpolate(
+                noise_std_map.unsqueeze(1),  # [B, 1, H, W]
+                size=(H_f, W_f),
+                mode='bilinear',
+                align_corners=False
+            )  # [B, 1, H_f, W_f]
+            
+            # Generate noise with spatially-varying std
+            # noise_std_upsampled broadcasts across channels
+            noise = torch.randn_like(feat) * noise_std_upsampled
+            
+            noised_feats.append(feat + noise)
+        
+        return noised_feats
+
     def forward(self, imgs, img_noise=None, apply_noise=None):
         """
         Forward pass.
@@ -740,13 +799,14 @@ class RDPP_NOISING(nn.Module):
                 features = self.proj_layer(feats_t)
                 fused_feat = self.mff_oce(features)
                 
-                # Apply adaptive noise
+                # Apply adaptive noise to fused features
                 noised_fused, influence_map, noise_std_map = self.noising_module.apply_adaptive_noise(
                     fused_feat, self.memory_bank
                 )
                 
-                # Get noised features through teacher
-                noised_features = [f + torch.randn_like(f) * noise_std_map.mean() * 0.1 for f in feats_t]
+                # Apply TRULY adaptive noise to teacher features (per-position, not mean)
+                # Upscale noise_std_map to each feature's spatial resolution
+                noised_features = self._apply_adaptive_noise_to_features(feats_t, noise_std_map)
                 
                 # Projection
                 feature_space_noise, feature_space = self.proj_layer(feats_t, features_noise=noised_features)
