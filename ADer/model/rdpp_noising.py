@@ -801,15 +801,16 @@ class RDPP_NOISING(nn.Module):
                 noised_feats_t = self._apply_adaptive_noise_to_feats(feats_t)
                 
                 # 3. Projection layer: project both clean and noised features
-                feature_space_noise, feature_space = self.proj_layer(
-                    feats_t, features_noise=noised_feats_t
-                )
+                # feature_space_noise, feature_space = self.proj_layer(
+                #     feats_t, features_noise=noised_feats_t
+                # )
+                feature_space_noise = self.proj_layer(noised_feats_t)
                 
                 # 4. Compute RD++ projection loss
-                L_proj = self.proj_loss(noised_feats_t, feature_space_noise, feature_space)
+                L_proj = 0#self.proj_loss(noised_feats_t, feature_space_noise, feature_space)
                 
                 # 5. Decode from clean projected features through MFF_OCE
-                feats_s = self.net_s(self.mff_oce(feature_space))
+                feats_s = self.net_s(self.mff_oce(feature_space_noise))
                 
                 return feats_t, feats_s, L_proj
             
