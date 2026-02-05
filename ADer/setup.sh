@@ -126,7 +126,9 @@ pip install adeval \
     fvcore \
     tensorboardX \
     timm
+pip install numpy==1.26.4 scikit-learn
 
+conda install -c conda-forge accimage -y
 echo "Additional dependencies installed."
 echo ""
 
