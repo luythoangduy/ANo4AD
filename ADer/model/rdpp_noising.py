@@ -24,6 +24,13 @@ from model import get_model
 from model import MODEL
 
 try:
+    from perlin_numpy import generate_perlin_noise_2d
+    HAS_PERLIN = True
+except ImportError:
+    HAS_PERLIN = False
+    logging.warning("perlin-numpy not installed. Perlin noise will fall back to Gaussian.")
+
+try:
     import geomloss
     HAS_GEOMLOSS = True
 except ImportError:
@@ -200,22 +207,70 @@ class MFF_OCE(nn.Module):
 
 
 # ========== RD++ Projection Layer ==========
+
+class PositionalNorm2d(nn.Module):
+    """
+    Positional Normalization (PONO): Chuẩn hóa feature theo chiều Channels 
+    tại mỗi vị trí pixel (h, w) riêng biệt.
+    
+    Điều này giúp nhiễu tại pixel này KHÔNG ảnh hưởng đến thống kê của pixel khác.
+    """
+    def __init__(self, num_features, affine=True, eps=1e-5):
+        super(PositionalNorm2d, self).__init__()
+        self.num_features = num_features
+        self.affine = affine
+        self.eps = eps
+        
+        if self.affine:
+            # Tham số learnable (gamma, beta) có kích thước (1, C, 1, 1) 
+            # để scale lại từng channel sau khi norm
+            self.weight = nn.Parameter(torch.ones(1, num_features, 1, 1))
+            self.bias = nn.Parameter(torch.zeros(1, num_features, 1, 1))
+        else:
+            self.register_parameter('weight', None)
+            self.register_parameter('bias', None)
+
+    def forward(self, x):
+        # x shape: (N, C, H, W)
+        
+        # 1. Tính Mean và Var dọc theo chiều Channels (dim=1)
+        # Kết quả sẽ có shape (N, 1, H, W) -> Thống kê riêng cho từng pixel
+        mean = x.mean(dim=1, keepdim=True)
+        var = x.var(dim=1, keepdim=True, unbiased=False)
+        
+        # 2. Chuẩn hóa
+        x_norm = (x-mean) / torch.sqrt(var + self.eps)
+        
+        # 3. Scale và Shift (nếu dùng affine)
+        if self.affine:
+            x_norm = x_norm * self.weight + self.bias
+            
+        return x_norm
+
 class ProjLayer(nn.Module):
-    """Projection layer for feature transformation."""
+    """Projection layer for feature transformation with Positional Norm."""
     def __init__(self, in_c, out_c):
         super(ProjLayer, self).__init__()
+        
         self.proj = nn.Sequential(
+            # Block 1
             nn.Conv2d(in_c, in_c // 2, kernel_size=3, stride=1, padding=1),
-            nn.InstanceNorm2d(in_c // 2),
+            PositionalNorm2d(in_c // 2),  # <-- Thay InstanceNorm
             nn.LeakyReLU(),
+            
+            # Block 2
             nn.Conv2d(in_c // 2, in_c // 4, kernel_size=3, stride=1, padding=1),
-            nn.InstanceNorm2d(in_c // 4),
+            PositionalNorm2d(in_c // 4),  # <-- Thay InstanceNorm
             nn.LeakyReLU(),
+            
+            # Block 3
             nn.Conv2d(in_c // 4, in_c // 2, kernel_size=3, stride=1, padding=1),
-            nn.InstanceNorm2d(in_c // 2),
+            PositionalNorm2d(in_c // 2),  # <-- Thay InstanceNorm
             nn.LeakyReLU(),
+            
+            # Block 4
             nn.Conv2d(in_c // 2, out_c, kernel_size=3, stride=1, padding=1),
-            nn.InstanceNorm2d(out_c),
+            PositionalNorm2d(out_c),      # <-- Thay InstanceNorm
             nn.LeakyReLU(),
         )
         
@@ -355,6 +410,66 @@ def random_sampling(features, n_samples):
     return features[indices]
 
 
+def kmeans_sampling(features, n_clusters, max_iter=100, device='cuda'):
+    """
+    K-means clustering sampling.
+
+    Args:
+        features: [N, D] feature tensor
+        n_clusters: number of clusters
+        max_iter: max iterations for k-means
+        device: device to run on
+
+    Returns:
+        centroids: [n_clusters, D] cluster centroids
+    """
+    N, D = features.shape
+    features = features.to(device)
+
+    # Initialize centroids using k-means++
+    centroids = []
+    first_idx = torch.randint(0, N, (1,), device=device).item()
+    centroids.append(features[first_idx])
+
+    for _ in range(n_clusters - 1):
+        # Compute distance to nearest centroid
+        centroids_tensor = torch.stack(centroids)
+        distances = torch.cdist(features, centroids_tensor)
+        min_distances = distances.min(dim=1)[0]
+
+        # Sample next centroid proportional to distance squared
+        probs = min_distances ** 2
+        probs = probs / probs.sum()
+        next_idx = torch.multinomial(probs, 1).item()
+        centroids.append(features[next_idx])
+
+    centroids = torch.stack(centroids)
+
+    # K-means iterations
+    for iteration in range(max_iter):
+        # Assign points to nearest centroid
+        distances = torch.cdist(features, centroids)
+        assignments = distances.argmin(dim=1)
+
+        # Update centroids
+        new_centroids = torch.zeros_like(centroids)
+        for k in range(n_clusters):
+            mask = assignments == k
+            if mask.sum() > 0:
+                new_centroids[k] = features[mask].mean(dim=0)
+            else:
+                new_centroids[k] = centroids[k]
+
+        # Check convergence
+        if torch.allclose(centroids, new_centroids, atol=1e-6):
+            LOGGER.info(f'K-means converged at iteration {iteration + 1}')
+            break
+
+        centroids = new_centroids
+
+    return centroids
+
+
 def greedy_coreset_sampling_gpu(features, n_coreset, batch_size=5000):
     """Fast greedy k-Center coreset sampling on GPU."""
     N, D = features.shape
@@ -456,6 +571,9 @@ def memory_efficient_coreset_sampling(
     elif sampling_method == 'greedy':
         LOGGER.info(f'Using greedy coreset sampling on {coreset_device}')
         result = greedy_fn(features, n_coreset)
+    elif sampling_method == 'kmeans':
+        LOGGER.info(f'Using k-means clustering sampling on {coreset_device}')
+        result = kmeans_sampling(features, n_coreset, device=coreset_device)
     elif sampling_method == 'hybrid':
         pre_sample_size = min(max_features_for_greedy, N)
         LOGGER.info(f'Using hybrid: random to {pre_sample_size}, then greedy on {coreset_device}')
@@ -476,12 +594,13 @@ class AdaptiveNoisingModule(nn.Module):
     """
 
     def __init__(self, feature_dim=2048, n_neighbors=9, noise_std_range=(0.01, 0.5),
-                 distance_batch_size=1000):
+                 distance_batch_size=1000, noise_type='uniform'):
         super(AdaptiveNoisingModule, self).__init__()
         self.feature_dim = feature_dim
         self.n_neighbors = n_neighbors
         self.noise_std_range = noise_std_range
         self.distance_batch_size = distance_batch_size
+        self.noise_type = noise_type
 
         self.influence_scale = nn.Parameter(torch.ones(1))
         self.distance_scale = nn.Parameter(torch.ones(1))
@@ -561,7 +680,7 @@ class AdaptiveNoisingModule(nn.Module):
         distance_norm = distance_norm.expand_as(influence_norm)  # [N, D]
         
         # Combine signals with learnable scaling
-        combined = self.influence_scale * influence_norm + self.distance_scale * distance_norm
+        combined = self.influence_scale * influence_norm #+ self.distance_scale * distance_norm
         
         # Map to noise std range using sigmoid
         min_std, max_std = self.noise_std_range
@@ -569,14 +688,70 @@ class AdaptiveNoisingModule(nn.Module):
         
         return noise_std
 
+    def generate_noise_spatial(self, B, C, H, W, noise_std_map, device):
+        """
+        Generate spatial noise for [B, C, H, W] features.
+
+        Args:
+            B, C, H, W: shape dimensions
+            noise_std_map: [B, H, W] noise std per position
+            device: torch device
+
+        Returns:
+            noise: [B, C, H, W] noise tensor
+        """
+        if self.noise_type == 'uniform':
+            noise = (torch.rand(B, C, H, W, device=device) * 2 - 1)
+            noise = noise * noise_std_map.unsqueeze(1)
+        elif self.noise_type == 'gaussian':
+            noise = torch.randn(B, C, H, W, device=device)
+            noise = noise * noise_std_map.unsqueeze(1)
+        elif self.noise_type == 'perlin':
+            if not HAS_PERLIN:
+                LOGGER.warning("Perlin not available, using Gaussian")
+                noise = torch.randn(B, C, H, W, device=device) * noise_std_map.unsqueeze(1)
+            else:
+                noise = torch.zeros(B, C, H, W, device=device)
+                for b in range(B):
+                    perlin = generate_perlin_noise_2d((H, W), (4, 4))
+                    perlin = torch.from_numpy(perlin).float().to(device)
+                    perlin = (perlin - perlin.min()) / (perlin.max() - perlin.min() + 1e-8) * 2 - 1
+                    noise[b] = perlin.unsqueeze(0) * noise_std_map[b].unsqueeze(0)
+        else:
+            raise ValueError(f"Unknown noise_type: {self.noise_type}")
+        return noise
+
+    def generate_noise_tensor(self, shape, noise_std, device):
+        """
+        Generate noise tensor based on noise_type.
+
+        Args:
+            shape: tuple (N, C) for flat features
+            noise_std: [N] noise standard deviation per sample
+            device: torch device
+
+        Returns:
+            noise: [N, C] noise tensor
+        """
+        if self.noise_type == 'uniform':
+            noise = (torch.rand(shape, device=device) * 2 - 1) * noise_std.unsqueeze(1)
+        elif self.noise_type == 'gaussian':
+            noise = torch.randn(shape, device=device) * noise_std.unsqueeze(1)
+        elif self.noise_type == 'perlin':
+            LOGGER.warning("Perlin for flat features, using Gaussian")
+            noise = torch.randn(shape, device=device) * noise_std.unsqueeze(1)
+        else:
+            raise ValueError(f"Unknown noise_type: {self.noise_type}")
+        return noise
+
     def apply_adaptive_noise(self, features, memory_bank):
         """
         Apply adaptive noise to features based on memory bank influence.
-        
+
         Args:
             features: [B, C, H, W] features from MFF_OCE
             memory_bank: [M, D] memory bank features
-            
+
         Returns:
             noised_features: [B, C, H, W]
             influence_map: [B, H, W]
@@ -584,16 +759,16 @@ class AdaptiveNoisingModule(nn.Module):
         """
         B, C, H, W = features.shape
         device = features.device
-        
+
         # Reshape to [B*H*W, C] for per-position processing
         features_flat = features.permute(0, 2, 3, 1).reshape(-1, C)
-        
+
         # Compute influence for each spatial position
         influence, knn_distances = self.compute_influence_analytical(features_flat, memory_bank)
-        
+
         # Aggregate influence per position (mean across channels)
         influence_per_pos = influence.mean(dim=1)  # [B*H*W]
-        
+
         # Normalize influence to [0, 1]
         influence_min = influence_per_pos.min()
         influence_max = influence_per_pos.max()
@@ -601,22 +776,22 @@ class AdaptiveNoisingModule(nn.Module):
             influence_norm = (influence_per_pos - influence_min) / (influence_max - influence_min)
         else:
             influence_norm = torch.zeros_like(influence_per_pos)
-        
+
         # Map influence to noise std
         noise_min, noise_max = self.noise_std_range
         noise_std = noise_min + influence_norm * (noise_max - noise_min)
-        
-        # Generate noise
-        noise = torch.randn_like(features_flat) * noise_std.unsqueeze(1)
-        
+
+        # Generate noise based on noise_type
+        noise = self.generate_noise_tensor(features_flat.shape, noise_std, device)
+
         # Apply noise
         noised_features_flat = features_flat + noise
-        
+
         # Reshape back
         noised_features = noised_features_flat.reshape(B, H, W, C).permute(0, 3, 1, 2)
         influence_map = influence_norm.reshape(B, H, W)
         noise_std_map = noise_std.reshape(B, H, W)
-        
+
         return noised_features, influence_map, noise_std_map
 
 
@@ -629,40 +804,45 @@ class RDPP_NOISING(nn.Module):
     """
 
     def __init__(self, model_t, model_s, n_neighbors=9, noise_std_range=(0.01, 0.3),
-                 coreset_sampling_ratio=0.01, enable_noise=True, proj_base=64, **kwargs):
+                 coreset_sampling_ratio=0.01, enable_noise=True, proj_base=64,
+                 noise_type='uniform', noise_position='encoder', **kwargs):
         super(RDPP_NOISING, self).__init__()
-        
+
         # Networks
         self.net_t = get_model(model_t)
         self.mff_oce = MFF_OCE(Bottleneck, 3)
         self.net_s = get_model(model_s)
-        
+
         # RD++ components
         self.proj_layer = MultiProjectionLayer(base=proj_base)
         self.proj_loss = Revisit_RDLoss()
-        
+
         # Adaptive noising - uses last teacher layer features (1024 for wide_resnet50)
         # feature_dim should match feats_t[-1] channel count
         self.noising_module = AdaptiveNoisingModule(
             feature_dim=1024,  # Last teacher layer: 1024 channels for wide_resnet50
             n_neighbors=n_neighbors,
             noise_std_range=noise_std_range,
+            noise_type=noise_type,
         )
-        
+
         # Configuration
         self.coreset_sampling_ratio = coreset_sampling_ratio
         self.enable_noise = enable_noise
-        
+        self.noise_position = noise_position  # 'encoder', 'projector', 'mff_oce'
+
         # Memory bank (built during training)
         self.memory_bank = None
         self.memory_bank_built = False
-        
+
         # Frozen layers
         self.frozen_layers = ['net_t']
-        
+
         LOGGER.info('='*50)
         LOGGER.info('RDPP Noising Model Initialized')
         LOGGER.info(f'Noise Enabled: {enable_noise}')
+        LOGGER.info(f'Noise Type: {noise_type}')
+        LOGGER.info(f'Noise Position: {noise_position}')
         LOGGER.info(f'N Neighbors: {n_neighbors}')
         LOGGER.info(f'Noise STD Range: {noise_std_range}')
         LOGGER.info(f'Coreset Sampling Ratio: {coreset_sampling_ratio}')
@@ -795,23 +975,32 @@ class RDPP_NOISING(nn.Module):
             
             if should_apply_adaptive_noise:
                 # === RD++ with Adaptive Noise (Memory Bank based) ===
-                
-                # 2. Apply adaptive noise to teacher features
-                # This replaces the external img_noise path
-                noised_feats_t = self._apply_adaptive_noise_to_feats(feats_t)
-                
-                # 3. Projection layer: project both clean and noised features
-                # feature_space_noise, feature_space = self.proj_layer(
-                #     feats_t, features_noise=noised_feats_t
-                # )
-                feature_space_noise = self.proj_layer(noised_feats_t)
-                
-                # 4. Compute RD++ projection loss
-                L_proj = 0#self.proj_loss(noised_feats_t, feature_space_noise, feature_space)
-                
-                # 5. Decode from clean projected features through MFF_OCE
-                feats_s = self.net_s(self.mff_oce(feature_space_noise))
-                
+
+                if self.noise_position == 'encoder':
+                    # Apply noise to encoder features
+                    noised_feats_t = self._apply_adaptive_noise_to_feats(feats_t)
+                    feature_space_noise = self.proj_layer(noised_feats_t)
+                    L_proj = 0
+                    feats_s = self.net_s(self.mff_oce(feature_space_noise))
+
+                elif self.noise_position == 'projector':
+                    # Apply noise to projector output
+                    feature_space = self.proj_layer(feats_t)
+                    noised_proj = self._apply_adaptive_noise_to_feats(feature_space)
+                    L_proj = 0
+                    feats_s = self.net_s(self.mff_oce(noised_proj))
+
+                elif self.noise_position == 'mff_oce':
+                    # Apply noise to mff_oce output
+                    feature_space = self.proj_layer(feats_t)
+                    mff_out = self.mff_oce(feature_space)
+                    noised_mff = self._apply_adaptive_noise_single(mff_out)
+                    L_proj = 0
+                    feats_s = self.net_s(noised_mff)
+
+                else:
+                    raise ValueError(f"Unknown noise_position: {self.noise_position}")
+
                 return feats_t, feats_s, L_proj
             
             elif img_noise is not None:
@@ -881,11 +1070,48 @@ class RDPP_NOISING(nn.Module):
                 align_corners=False
             )  # [B, 1, H_f, W_f]
             
-            # Generate and apply noise
-            noise = torch.randn_like(feat) * noise_std_upsampled
+            # Generate and apply noise using noise_type
+            noise = self.noising_module.generate_noise_spatial(
+                B, C, H_f, W_f, noise_std_upsampled.squeeze(1), feat.device
+            )
             noised_feats.append(feat + noise)
-        
+
         return noised_feats
+
+    def _apply_adaptive_noise_single(self, feat):
+        """
+        Apply adaptive noise to a single feature tensor.
+
+        Args:
+            feat: [B, C, H, W] single feature tensor
+
+        Returns:
+            noised_feat: [B, C, H, W] noised feature
+        """
+        B, C, H, W = feat.shape
+
+        # Flatten for influence computation
+        feat_flat = feat.permute(0, 2, 3, 1).reshape(-1, C)  # [B*H*W, C]
+
+        # Compute influence using analytical gradient
+        influence, knn_distances = self.noising_module.compute_influence_analytical(
+            feat_flat, self.memory_bank
+        )
+
+        # Get noise std from influence
+        noise_std = self.noising_module.propose_adaptive_noise_std(influence, knn_distances)
+
+        # Mean noise std per spatial position
+        noise_std_per_pos = noise_std.mean(dim=1)  # [B*H*W]
+        noise_std_map = noise_std_per_pos.reshape(B, H, W)  # [B, H, W]
+
+        # Generate and apply noise
+        noise = self.noising_module.generate_noise_spatial(
+            B, C, H, W, noise_std_map, feat.device
+        )
+        noised_feat = feat + noise
+
+        return noised_feat
 
 
 @MODEL.register_module

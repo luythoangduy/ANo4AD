@@ -30,7 +30,7 @@ class cfg(cfg_common, cfg_dataset_default, cfg_model_rd_noising):
         self.test_per_epoch = self.epoch_full // 10
         self.batch_train = 16
         self.batch_test_per = 16
-        self.lr = 0.005 * self.batch_train / 16
+        self.lr = 0.001 * self.batch_train / 16
         self.weight_decay = 0.05
         self.metrics = [
             'mAUROC_sp_max', 'mAP_sp_max', 'mF1_max_sp_max',
@@ -89,7 +89,7 @@ class cfg(cfg_common, cfg_dataset_default, cfg_model_rd_noising):
             # Memory bank configuration (on MFF_OCE fused features: 2048ch, 8x8)
             coreset_sampling_ratio=0.01,  # 1% of features
             # Adaptive noise configuration
-            n_neighbors=9,
+            n_neighbors=36,
             noise_std_range=(0.01, 0.3),
             enable_noise=True,
         )
