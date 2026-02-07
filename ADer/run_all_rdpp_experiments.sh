@@ -50,6 +50,7 @@ CUDA_VISIBLE_DEVICES=$GPU_ID python run.py \
     -c "$CONFIG_FILE" \
     -m train \
     model.kwargs.enable_noise=False \
+    trainer.noise_enabled=False \
     trainer.logdir_sub="no_noise_baseline" \
     wandb.name="no_noise_baseline" \
     2>&1 | tee "$RESULTS_DIR/exp_${CURRENT_EXP}_no_noise.log"
