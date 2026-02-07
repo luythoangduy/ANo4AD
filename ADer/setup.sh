@@ -126,19 +126,40 @@ pip install adeval \
     fvcore \
     tensorboardX \
     timm
-pip install numpy==1.26.4 scikit-learn
+pip install numpy==1.26.4 scikit-learn wandb
 
 conda install -c conda-forge accimage -y
 echo "Additional dependencies installed."
 echo ""
 
-# Optional: Install accimage with conda (if using conda environment)
-# echo "Installing accimage (optional, requires conda)..."
-# conda install -c conda-forge accimage -y || echo "Warning: Could not install accimage. This is optional."
-# echo ""
+# ============================================================================
+# Step 7: Setup Weights & Biases (Optional)
+# ============================================================================
+echo "[Step 7/8] Setting up Weights & Biases (optional)..."
+echo ""
+echo "Weights & Biases (wandb) is used for experiment tracking and visualization."
+echo "wandb is enabled by default in the config."
+echo ""
+read -p "Do you want to setup wandb now? (y/n): " setup_wandb
+
+if [ "$setup_wandb" = "y" ] || [ "$setup_wandb" = "Y" ]; then
+    echo ""
+    echo "Starting wandb setup..."
+    chmod +x wandb_setup.sh
+    ./wandb_setup.sh
+else
+    echo ""
+    echo "Skipping wandb setup."
+    echo "You can run './wandb_setup.sh' later to configure wandb."
+    echo ""
+    echo "Note: wandb is enabled by default. To disable it for a run:"
+    echo "  python run.py -c ... wandb.enable=False"
+fi
+
+echo ""
 
 # ============================================================================
-# Step 7: Verify Installation
+# Step 8: Verify Installation
 # ============================================================================
 echo "============================================================================"
 echo "Verifying installation..."

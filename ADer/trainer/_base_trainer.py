@@ -242,8 +242,8 @@ class BaseTrainer():
             save_path = f'{self.cfg.logdir}/ckpt.pth'
             torch.save(checkpoint_info, save_path)
             torch.save(checkpoint_info['net'], f'{self.cfg.logdir}/net.pth')
-            if self.epoch % self.cfg.trainer.test_per_epoch == 0:
-                torch.save(checkpoint_info['net'], f'{self.cfg.logdir}/net_{self.epoch}.pth')
+            # if self.epoch % self.cfg.trainer.test_per_epoch == 0:
+            #     torch.save(checkpoint_info['net'], f'{self.cfg.logdir}/net_{self.epoch}.pth')
 
     def run(self):
         log_msg(self.logger,

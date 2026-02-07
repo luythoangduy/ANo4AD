@@ -50,6 +50,43 @@ chmod +x run_rdpp_by_group.sh
 
 **Windows users**: Use `.bat` files or run Python commands directly (see Windows section below).
 
+### Weights & Biases (wandb) Setup (Recommended)
+
+wandb is **enabled by default** for cloud-based experiment tracking.
+
+#### Setup wandb:
+
+**Linux/Mac:**
+```bash
+chmod +x wandb_setup.sh
+./wandb_setup.sh
+```
+
+**Windows:**
+```powershell
+powershell -ExecutionPolicy Bypass -File wandb_setup.ps1
+```
+
+**Manual setup:**
+```bash
+pip install wandb
+wandb login
+```
+
+#### Key Features:
+- ✅ Automatic cloud backup of all experiments
+- ✅ Interactive visualizations and comparisons
+- ✅ Model checkpoint versioning
+- ✅ Team collaboration
+- ✅ Free for academic research
+
+**Note**: All experiments will automatically sync to your wandb account. To disable wandb for a run:
+```bash
+python run.py -c ... wandb.enable=False
+```
+
+For detailed wandb guide, see [WANDB_GUIDE.md](WANDB_GUIDE.md).
+
 ## Experiment Structure
 
 ### Total Experiments: 28

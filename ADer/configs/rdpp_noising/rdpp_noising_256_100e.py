@@ -166,3 +166,14 @@ class cfg(cfg_common, cfg_dataset_default, cfg_model_rdpp_noising):
             dict(name='batch_t', fmt=':>5.3f', add_name='avg'),
             dict(name='cos', suffixes=[''], fmt=':>5.3f', add_name='avg'),
         ]
+
+        # ==> wandb
+        self.wandb = Namespace()
+        self.wandb.enable = True  # Enable wandb by default
+        self.wandb.project = 'rdpp-noising-experiments'
+        self.wandb.entity = None  # Set to your wandb username/team
+        self.wandb.name = None  # Auto-generated from experiment config
+        self.wandb.tags = ['rdpp', 'noising', '100epochs']
+        self.wandb.notes = 'RDPP Noising experiments with adaptive noise injection'
+        self.wandb.log_model = False  # Save best model checkpoints to wandb
+        self.wandb.log_freq = 50  # Log every 50 iterations

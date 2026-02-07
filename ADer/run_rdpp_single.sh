@@ -52,7 +52,9 @@ if [ "$ENABLE_NOISE" = "False" ]; then
         -c "$CONFIG_FILE" \
         -m train \
         model.kwargs.enable_noise=False \
-        trainer.logdir_sub="$EXP_NAME"
+        trainer.logdir_sub="$EXP_NAME" \
+        wandb.name="$EXP_NAME" \
+        wandb.tags="['rdpp','noising','no-noise','baseline']"
 else
     CUDA_VISIBLE_DEVICES=$GPU_ID python run.py \
         -c "$CONFIG_FILE" \
@@ -61,7 +63,9 @@ else
         model.kwargs.noise_type="$NOISE_TYPE" \
         model.kwargs.noise_position="$NOISE_POSITION" \
         trainer.sampling_method="$SAMPLING_METHOD" \
-        trainer.logdir_sub="$EXP_NAME"
+        trainer.logdir_sub="$EXP_NAME" \
+        wandb.name="$EXP_NAME" \
+        wandb.tags="['rdpp','noising','$NOISE_TYPE','$NOISE_POSITION','$SAMPLING_METHOD']"
 fi
 
 echo ""
