@@ -51,6 +51,7 @@ CUDA_VISIBLE_DEVICES=$GPU_ID python run.py \
     -m train \
     model.kwargs.enable_noise=False \
     trainer.logdir_sub="no_noise_baseline" \
+    wandb.name="no_noise_baseline" \
     2>&1 | tee "$RESULTS_DIR/exp_${CURRENT_EXP}_no_noise.log"
 
 echo "Completed at: $(date)" | tee -a "$LOG_FILE"
@@ -92,6 +93,7 @@ for noise_type in "${NOISE_TYPES[@]}"; do
                 model.kwargs.noise_position="$noise_pos" \
                 trainer.sampling_method="$sampling" \
                 trainer.logdir_sub="$EXP_NAME" \
+                wandb.name="$EXP_NAME" \
                 2>&1 | tee "$RESULTS_DIR/exp_${CURRENT_EXP}_${EXP_NAME}.log"
 
             echo "  Completed at: $(date)" | tee -a "$LOG_FILE"

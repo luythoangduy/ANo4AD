@@ -54,9 +54,9 @@ set CUDA_VISIBLE_DEVICES=%GPU_ID%
 
 REM Run experiment
 if "%ENABLE_NOISE%"=="False" (
-    python run.py -c %CONFIG_FILE% -m train model.kwargs.enable_noise=False trainer.logdir_sub="%EXP_NAME%"
+    python run.py -c %CONFIG_FILE% -m train model.kwargs.enable_noise=False trainer.logdir_sub="%EXP_NAME%" wandb.name="%EXP_NAME%"
 ) else (
-    python run.py -c %CONFIG_FILE% -m train model.kwargs.enable_noise=True model.kwargs.noise_type="%NOISE_TYPE%" model.kwargs.noise_position="%NOISE_POSITION%" trainer.sampling_method="%SAMPLING_METHOD%" trainer.logdir_sub="%EXP_NAME%"
+    python run.py -c %CONFIG_FILE% -m train model.kwargs.enable_noise=True model.kwargs.noise_type="%NOISE_TYPE%" model.kwargs.noise_position="%NOISE_POSITION%" trainer.sampling_method="%SAMPLING_METHOD%" trainer.logdir_sub="%EXP_NAME%" wandb.name="%EXP_NAME%"
 )
 
 echo.

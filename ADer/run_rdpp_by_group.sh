@@ -45,7 +45,8 @@ case $GROUP in
             model.kwargs.noise_type="uniform" \
             model.kwargs.noise_position="encoder" \
             trainer.sampling_method="greedy" \
-            trainer.logdir_sub="uniform_encoder_greedy"
+            trainer.logdir_sub="uniform_encoder_greedy" \
+            wandb.name="uniform_encoder_greedy"
 
         # Gaussian
         echo "[2/3] Gaussian Noise"
@@ -55,7 +56,8 @@ case $GROUP in
             model.kwargs.noise_type="gaussian" \
             model.kwargs.noise_position="encoder" \
             trainer.sampling_method="greedy" \
-            trainer.logdir_sub="gaussian_encoder_greedy"
+            trainer.logdir_sub="gaussian_encoder_greedy" \
+            wandb.name="gaussian_encoder_greedy"
 
         # Perlin
         echo "[3/3] Perlin Noise"
@@ -65,7 +67,8 @@ case $GROUP in
             model.kwargs.noise_type="perlin" \
             model.kwargs.noise_position="encoder" \
             trainer.sampling_method="greedy" \
-            trainer.logdir_sub="perlin_encoder_greedy"
+            trainer.logdir_sub="perlin_encoder_greedy" \
+            wandb.name="perlin_encoder_greedy"
         ;;
 
     positions)
@@ -81,7 +84,8 @@ case $GROUP in
             model.kwargs.noise_type="uniform" \
             model.kwargs.noise_position="encoder" \
             trainer.sampling_method="greedy" \
-            trainer.logdir_sub="uniform_encoder_greedy"
+            trainer.logdir_sub="uniform_encoder_greedy" \
+            wandb.name="uniform_encoder_greedy"
 
         # Projector
         echo "[2/3] After Projector"
@@ -91,7 +95,8 @@ case $GROUP in
             model.kwargs.noise_type="uniform" \
             model.kwargs.noise_position="projector" \
             trainer.sampling_method="greedy" \
-            trainer.logdir_sub="uniform_projector_greedy"
+            trainer.logdir_sub="uniform_projector_greedy" \
+            wandb.name="uniform_projector_greedy"
 
         # MFF_OCE
         echo "[3/3] After MFF_OCE"
@@ -101,7 +106,8 @@ case $GROUP in
             model.kwargs.noise_type="uniform" \
             model.kwargs.noise_position="mff_oce" \
             trainer.sampling_method="greedy" \
-            trainer.logdir_sub="uniform_mff_oce_greedy"
+            trainer.logdir_sub="uniform_mff_oce_greedy" \
+            wandb.name="uniform_mff_oce_greedy"
         ;;
 
     sampling)
@@ -117,7 +123,8 @@ case $GROUP in
             model.kwargs.noise_type="uniform" \
             model.kwargs.noise_position="encoder" \
             trainer.sampling_method="greedy" \
-            trainer.logdir_sub="uniform_encoder_greedy"
+            trainer.logdir_sub="uniform_encoder_greedy" \
+            wandb.name="uniform_encoder_greedy"
 
         # Random
         echo "[2/3] Random Sampling"
@@ -127,7 +134,8 @@ case $GROUP in
             model.kwargs.noise_type="uniform" \
             model.kwargs.noise_position="encoder" \
             trainer.sampling_method="random" \
-            trainer.logdir_sub="uniform_encoder_random"
+            trainer.logdir_sub="uniform_encoder_random" \
+            wandb.name="uniform_encoder_random"
 
         # K-means
         echo "[3/3] K-means Sampling"
@@ -137,7 +145,8 @@ case $GROUP in
             model.kwargs.noise_type="uniform" \
             model.kwargs.noise_position="encoder" \
             trainer.sampling_method="kmeans" \
-            trainer.logdir_sub="uniform_encoder_kmeans"
+            trainer.logdir_sub="uniform_encoder_kmeans" \
+            wandb.name="uniform_encoder_kmeans"
         ;;
 
     baseline)
@@ -150,7 +159,8 @@ case $GROUP in
         CUDA_VISIBLE_DEVICES=$GPU_ID python run.py \
             -c "$CONFIG_FILE" -m train \
             model.kwargs.enable_noise=False \
-            trainer.logdir_sub="no_noise_baseline"
+            trainer.logdir_sub="no_noise_baseline" \
+            wandb.name="no_noise_baseline"
 
         # Best config (uniform + encoder + greedy)
         echo "[2/2] With Noise (uniform + encoder + greedy)"
@@ -160,7 +170,8 @@ case $GROUP in
             model.kwargs.noise_type="uniform" \
             model.kwargs.noise_position="encoder" \
             trainer.sampling_method="greedy" \
-            trainer.logdir_sub="uniform_encoder_greedy"
+            trainer.logdir_sub="uniform_encoder_greedy" \
+            wandb.name="uniform_encoder_greedy"
         ;;
 
     *)
