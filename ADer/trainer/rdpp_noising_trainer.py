@@ -230,8 +230,80 @@ class RDPPNoisingTrainer(BaseTrainer):
             log_msg(self.logger, 'PHASE 2: Starting Training with Adaptive Noise')
             log_msg(self.logger, '='*60)
         
-        # Phase 2: Normal training (call parent's train method)
-        super().train()
+        # Phase 2: Training with adaptive noise
+        self.reset(isTrain=True)
+        while self.iter < self.iter_full:
+            self.train_loader.sampler.set_epoch(int(self.epoch)) if self.cfg.dist else None
+            train_length = self.cfg.data.train_size
+            train_loader = iter(self.train_loader)
+            
+            for batch_idx in range(train_length):
+                if self.iter >= self.iter_full:
+                    break
+                
+                # ---------- data ----------
+                t1 = get_timepc()
+                train_data = next(train_loader)
+                self.set_input(train_data)
+                t2 = get_timepc()
+                update_log_term(self.log_terms.get('data_t'), t2 - t1, 1, self.master)
+                
+                # ---------- optimization ----------
+                self.optimize_parameters()
+                self.scheduler_step(self.iter)
+                t3 = get_timepc()
+                update_log_term(self.log_terms.get('optim_t'), t3 - t2, 1, self.master)
+                update_log_term(self.log_terms.get('batch_t'), t3 - t1, 1, self.master)
+                
+                # ---------- log ----------
+                self.iter += 1
+                if self.master:
+                    if self.iter % self.cfg.logging.train_log_per == 0:
+                        noise_status = 'ON' if (self.noise_enabled and self.memory_bank_built and self.epoch >= self.noise_warmup_epochs) else 'OFF'
+                        msg = able(self.progress.get_msg(
+                            self.iter, self.iter_full,
+                            self.iter / train_length, self.iter_full / train_length
+                        ), self.master, None)
+                        msg = f'{msg} [Noise: {noise_status}]'
+                        log_msg(self.logger, msg)
+                        
+                        if self.writer:
+                            for k, v in self.log_terms.items():
+                                self.writer.add_scalar(f'Train/{k}', v.val, self.iter)
+                            self.writer.flush()
+                        
+                        # Log to WandB
+                        if hasattr(self.cfg, 'wandb') and self.cfg.wandb.enable:
+                            wandb_metrics = {k: v.val for k, v in self.log_terms.items()}
+                            wandb_metrics['epoch'] = self.epoch
+                            wandb_metrics['noise_enabled'] = float(self.noise_enabled and self.memory_bank_built and self.epoch >= self.noise_warmup_epochs)
+                            log_wandb(self.cfg, wandb_metrics, step=self.iter, prefix='train')
+                
+                if self.iter % self.cfg.logging.train_reset_log_per == 0:
+                    self.reset(isTrain=True)
+            
+            # ---------- epoch end ----------
+            self.epoch += 1
+            if self.cfg.dist and self.dist_BN != '':
+                distribute_bn(self.net, self.world_size, self.dist_BN)
+            self.optim.sync_lookahead() if hasattr(self.optim, 'sync_lookahead') else None
+            
+            if self.epoch >= self.cfg.trainer.test_start_epoch or self.epoch % self.cfg.trainer.test_per_epoch == 0:
+                self.test()
+            else:
+                self.test_ghost()
+            
+            self.cfg.total_time = get_timepc() - self.cfg.task_start_time
+            total_time_str = str(datetime.timedelta(seconds=int(self.cfg.total_time)))
+            eta_time_str = str(datetime.timedelta(
+                seconds=int(self.cfg.total_time / self.epoch * (self.epoch_full - self.epoch))
+            ))
+            log_msg(self.logger, f'==> Total time: {total_time_str}\t Eta: {eta_time_str} \tLogged in \'{self.cfg.logdir}\'')
+            
+            self.save_checkpoint()
+            self.reset(isTrain=True)
+        
+        self._finish()
 
     @torch.no_grad()
     def test(self):
@@ -368,3 +440,17 @@ class RDPPNoisingTrainer(BaseTrainer):
                 floatfmt='.3f', numalign="center", stralign="center"
             )
             log_msg(self.logger, f'\n{msg}')
+            
+            # Log test metrics to WandB
+            if hasattr(self.cfg, 'wandb') and self.cfg.wandb.enable:
+                wandb_test_metrics = {}
+                for idx, cls_name in enumerate(self.cls_names):
+                    for metric in self.metrics:
+                        metric_result = self.metric_recorder[f'{metric}_{cls_name}'][-1]
+                        wandb_test_metrics[f'{metric}_{cls_name}'] = metric_result
+                    if len(self.cls_names) > 1 and idx == len(self.cls_names) - 1:
+                        for metric in self.metrics:
+                            metric_result_avg = self.metric_recorder[f'{metric}_Avg'][-1]
+                            wandb_test_metrics[f'{metric}_Avg'] = metric_result_avg
+                wandb_test_metrics['epoch'] = self.epoch
+                log_wandb(self.cfg, wandb_test_metrics, step=self.iter, prefix='test')
