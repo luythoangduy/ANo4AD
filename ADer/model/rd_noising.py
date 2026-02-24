@@ -381,11 +381,11 @@ class AdaptiveNoisingModule(nn.Module):
     Memory efficient: uses batched distance computation to avoid OOM.
     """
 
-    def __init__(self, feature_dim=2048, n_neighbors=9, noise_std_range=(0.01, 0.5),
+    def __init__(self, feature_dim=2048, n_neighbors=None, noise_std_range=(0.01, 0.5),
                  distance_batch_size=1000):
         super(AdaptiveNoisingModule, self).__init__()
         self.feature_dim = feature_dim
-        self.n_neighbors = n_neighbors
+        self.n_neighbors = n_neighbors  # None means use all neighbors (max)
         self.noise_std_range = noise_std_range
         self.distance_batch_size = distance_batch_size  # Batch size for distance computation
 
@@ -409,7 +409,7 @@ class AdaptiveNoisingModule(nn.Module):
         """
         N, D = features.shape
         M = memory_bank.shape[0]
-        K = min(self.n_neighbors, M)
+        K = M if self.n_neighbors is None else min(self.n_neighbors, M)
         device = features.device
         
         # Initialize output tensors
@@ -622,7 +622,7 @@ class RD_NOISING(nn.Module):
         self,
         model_t,
         model_s,
-        n_neighbors=9,
+        n_neighbors=None,  # None = use all neighbors (max)
         noise_std_range=(0.01, 0.5),
         coreset_sampling_ratio=0.1,  # Higher ratio since only 1 vector per image
         enable_noise=True,
@@ -900,7 +900,7 @@ if __name__ == '__main__':
     net = RD_NOISING(
         model_t=model_t,
         model_s=model_s,
-        n_neighbors=9,
+        n_neighbors=None,  # Use all neighbors (max)
         noise_std_range=(0.01, 0.5),
         coreset_sampling_ratio=0.1,
     ).cuda()

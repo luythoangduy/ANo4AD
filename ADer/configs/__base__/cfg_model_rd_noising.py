@@ -45,7 +45,7 @@ class cfg_model_rd_noising(Namespace):
             # Memory bank configuration
             coreset_sampling_ratio=0.01,  # 1% of features for memory bank
             # Adaptive noise configuration
-            n_neighbors=9,  # K nearest neighbors for influence computation
+            n_neighbors=None,  # None = use all neighbors (max)
             noise_std_range=(0.01, 0.3),  # Range of noise standard deviation
             noise_layers=[0, 1, 2],  # Apply noise to all layers
             enable_noise=True,  # Enable adaptive noise during training

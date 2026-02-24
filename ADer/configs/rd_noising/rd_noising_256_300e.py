@@ -86,7 +86,7 @@ class cfg(cfg_common, cfg_dataset_default, cfg_model_rd_noising):
             # Memory bank configuration (on MFF_OCE fused features: 2048ch, 8x8)
             coreset_sampling_ratio=0.01,
             # Adaptive noise configuration
-            n_neighbors=9,
+            n_neighbors=None,  # None = use all neighbors (max)
             noise_std_range=(0.01, 0.3),
             enable_noise=True,
         )
