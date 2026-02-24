@@ -593,11 +593,11 @@ class AdaptiveNoisingModule(nn.Module):
     Adaptive Noising using Analytical Gradient Feature Influence.
     """
 
-    def __init__(self, feature_dim=2048, n_neighbors=9, noise_std_range=(0.01, 0.5),
+    def __init__(self, feature_dim=2048, n_neighbors=None, noise_std_range=(0.01, 0.5),
                  distance_batch_size=1000, noise_type='uniform'):
         super(AdaptiveNoisingModule, self).__init__()
         self.feature_dim = feature_dim
-        self.n_neighbors = n_neighbors
+        self.n_neighbors = n_neighbors  # None means use all neighbors (max)
         self.noise_std_range = noise_std_range
         self.distance_batch_size = distance_batch_size
         self.noise_type = noise_type
@@ -609,7 +609,7 @@ class AdaptiveNoisingModule(nn.Module):
         """Compute K-nearest neighbor distances using batched computation."""
         N, D = features.shape
         M = memory_bank.shape[0]
-        K = min(self.n_neighbors, M)
+        K = M if self.n_neighbors is None else min(self.n_neighbors, M)
         device = features.device
         
         knn_distances = torch.zeros(N, K, device=device, dtype=features.dtype)
@@ -803,7 +803,7 @@ class RDPP_NOISING(nn.Module):
     Combines RD++ architecture with memory bank based adaptive noise injection.
     """
 
-    def __init__(self, model_t, model_s, n_neighbors=9, noise_std_range=(0.01, 0.3),
+    def __init__(self, model_t, model_s, n_neighbors=None, noise_std_range=(0.01, 0.3),
                  coreset_sampling_ratio=0.01, enable_noise=True, proj_base=64,
                  noise_type='uniform', noise_position='encoder', **kwargs):
         super(RDPP_NOISING, self).__init__()
@@ -1142,7 +1142,7 @@ if __name__ == '__main__':
     net = RDPP_NOISING(
         model_t=model_t,
         model_s=model_s,
-        n_neighbors=9,
+        n_neighbors=None,  # Use all neighbors (max)
         noise_std_range=(0.01, 0.5),
         coreset_sampling_ratio=0.1,
     ).cuda()

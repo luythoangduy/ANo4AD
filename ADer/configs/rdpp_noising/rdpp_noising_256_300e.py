@@ -90,7 +90,7 @@ class cfg(cfg_common, cfg_dataset_default, cfg_model_rdpp_noising):
             # Memory bank configuration
             coreset_sampling_ratio=0.01,  # 1% of features
             # Adaptive noise configuration
-            n_neighbors=9,
+            n_neighbors=None,  # None = use all neighbors (max)
             noise_std_range=(0.01, 0.3),
             enable_noise=True,
             # RD++ specific
