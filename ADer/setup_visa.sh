@@ -167,8 +167,8 @@ conda install -c conda-forge accimage -y
 echo "Additional dependencies installed."
 echo ""
 
-============================================================================
-Step 7: Setup Weights & Biases (Optional)
+# ============================================================================
+# Step 7: Setup Weights & Biases (Optional)
 # ============================================================================
 echo "[Step 7/7] Setting up Weights & Biases (optional)..."
 echo ""
