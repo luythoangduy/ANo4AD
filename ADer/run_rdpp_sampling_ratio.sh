@@ -16,7 +16,7 @@
 set -e
 
 # Configuration
-CONFIG_FILE="configs/rdpp_noising/rdpp_noising_256_100e.py"
+CONFIG_FILE="configs/rdpp_noising/rdpp_noising_256_100e_realiad.py"
 GPU_ID=${1:-0}
 
 # Fixed experiment settings (base)

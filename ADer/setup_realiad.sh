@@ -1,27 +1,31 @@
 #!/bin/bash
 
 # ============================================================================
-# Setup Script for RDPP Noising Experiments - Real-IAD Dataset (realiad_1024)
+# Setup Script for RDPP Noising Experiments - Real-IAD Dataset (realiad_256)
 # ============================================================================
 # This script will:
 # 1. Verify directory structure
 # 2. Install required packages
-# 3. Prepare Real-IAD realiad_1024 dataset (user-provided or from raw via resize)
+# 3. Download Real-IAD realiad_256 into data/realiad_256
 # 4. Verify RealIAD structure (per-class JSON + images)
 # 5. Install additional dependencies
 # 6. Setup Weights & Biases (optional)
 # ============================================================================
-# Real-IAD: https://realiad4ad.github.io/Real-IAD/
-# Dataset access: request realiad_1024 (~53GB) from realiad4ad@outlook.com
+# Downloads Real-IAD realiad_256 (256x256, smaller than 1024) from Hugging Face.
+# Pass your token: HF_TOKEN=your_token ./setup_realiad.sh
 # ============================================================================
 
 set -e  # Exit on error
 
-REALIAD_ROOT="data/realiad_1024"
-TARGET_RESO=1024
+# Hugging Face token for dataset download (use env: HF_TOKEN=xxx or HUGGING_FACE_HUB_TOKEN=xxx)
+HF_TOKEN="${HF_TOKEN:-$HUGGING_FACE_HUB_TOKEN}"
+
+REALIAD_ROOT="data/realiad_256"
+REALIAD_SUBDIR="realiad_256"
+HF_REALIAD_REPO="Real-IAD/Real-IAD"
 
 echo "============================================================================"
-echo "RDPP Noising Experiment Setup - Real-IAD (realiad_1024)"
+echo "RDPP Noising Experiment Setup - Real-IAD (realiad_256)"
 echo "Started at: $(date)"
 echo "============================================================================"
 echo ""
@@ -54,80 +58,114 @@ echo "Core packages installed."
 echo ""
 
 # ============================================================================
-# Step 3: Prepare realiad_1024 Dataset
+# Step 3: Download realiad_256 Dataset
 # ============================================================================
-echo "[Step 3/7] Preparing Real-IAD realiad_1024 dataset..."
-echo ""
-echo "Real-IAD realiad_1024 is 1024x1024 resolution (~53GB)."
-echo "Obtain it by requesting access from: realiad4ad@outlook.com"
-echo "See: https://realiad4ad.github.io/Real-IAD/ or https://github.com/TencentYoutuResearch/AnomalyDetection_Real-IAD"
+echo "[Step 3/7] Downloading Real-IAD realiad_256 into $REALIAD_ROOT..."
 echo ""
 
 if [ -d "$REALIAD_ROOT" ] && [ "$(ls -A $REALIAD_ROOT 2>/dev/null)" ]; then
-    echo "Found existing $REALIAD_ROOT - skipping download/extract."
+    echo "Found existing $REALIAD_ROOT - skipping download."
 else
-    echo "Choose how to set up realiad_1024:"
-    echo "  1) I have the realiad_1024 folder (or archive) - I will provide the path"
-    echo "  2) I have raw Real-IAD (explicit_full) - create realiad_1024 via resize_realiad.py"
-    echo "  3) Skip - I will manually place data in $REALIAD_ROOT later"
-    read -p "Enter choice (1/2/3): " choice
+    if [ -z "$HF_TOKEN" ]; then
+        echo "Error: HF_TOKEN not set. Run with: HF_TOKEN=your_token ./setup_realiad.sh"
+        echo "Get a token at https://huggingface.co/settings/tokens"
+        echo "Accept dataset access at https://huggingface.co/datasets/$HF_REALIAD_REPO"
+        exit 1
+    fi
+    mkdir -p data
+    pip install -q "huggingface_hub"
+    dl_dir="data/realiad_256_dl"
+    rm -rf "$dl_dir"
+    mkdir -p "$dl_dir"
+    echo "Downloading Real-IAD realiad_256 from Hugging Face (class zips + realiad_jsons.zip)..."
+    echo "Using Python huggingface_hub API (no CLI required)."
+    python - "$HF_REALIAD_REPO" "$HF_TOKEN" "$dl_dir" "$REALIAD_SUBDIR" << 'PYDOWNLOAD'
+import os, sys
+from huggingface_hub import list_repo_files, hf_hub_download
 
-    case "$choice" in
-        1)
-            read -p "Path to realiad_1024 folder or archive (.tar / .tar.gz / .zip): " user_path
-            if [ -z "$user_path" ] || [ ! -e "$user_path" ]; then
-                echo "Invalid or empty path. Skipping. Please extract/copy realiad_1024 to $REALIAD_ROOT manually."
-            else
-                mkdir -p data
-                if [ -d "$user_path" ]; then
-                    echo "Copying folder to $REALIAD_ROOT..."
-                    cp -r "$user_path" "$REALIAD_ROOT"
-                elif [ -f "$user_path" ]; then
-                    echo "Extracting archive to data/..."
-                    mkdir -p temp_download
-                    case "$user_path" in
-                        *.zip)   unzip -q -o "$user_path" -d temp_download ;;
-                        *.tar)   tar -xf "$user_path" -C temp_download ;;
-                        *.tar.gz|*.tgz) tar -xzf "$user_path" -C temp_download ;;
-                        *)       echo "Unsupported archive format. Copy or extract manually to $REALIAD_ROOT"; rm -rf temp_download 2>/dev/null; exit 1 ;;
-                    esac
-                    # Move extracted content to realiad_1024 (may be realiad_1024 subdir or direct content)
-                    if [ -d "temp_download/realiad_1024" ]; then
-                        mv temp_download/realiad_1024 "$REALIAD_ROOT"
-                    else
-                        mkdir -p "$REALIAD_ROOT"
-                        mv temp_download/* "$REALIAD_ROOT/" 2>/dev/null || true
-                    fi
-                    rm -rf temp_download
-                fi
-                echo "Done."
-            fi
-            ;;
-        2)
-            read -p "Path to raw Real-IAD root containing explicit_full (e.g. data/realiad or /path/to/realiad): " raw_root
-            if [ -z "$raw_root" ] || [ ! -d "$raw_root/explicit_full" ]; then
-                echo "Path must contain explicit_full/ subdir. Skipping. You can run later:"
-                echo "  python data/gen_benchmark/resize_realiad.py --root_path <path>/explicit_full --target_root data/ --target_reso $TARGET_RESO"
-            else
-                echo "Running resize_realiad.py (target_reso=$TARGET_RESO)..."
-                pip install Pillow -q
-                python data/gen_benchmark/resize_realiad.py \
-                    --root_path "$raw_root/explicit_full" \
-                    --target_root data/ \
-                    --target_reso $TARGET_RESO
-                # resize_realiad.py writes to data/realiad_1024/
-                echo "Done. Data written to $REALIAD_ROOT"
-            fi
-            ;;
-        3)
-            echo "Skipping. Create $REALIAD_ROOT and place realiad_1024 content there when ready."
-            mkdir -p "$REALIAD_ROOT"
-            ;;
-        *)
-            echo "Invalid choice. Create $REALIAD_ROOT and add data manually."
-            mkdir -p "$REALIAD_ROOT"
-            ;;
-    esac
+repo_id = sys.argv[1]
+token = sys.argv[2]
+local_dir = sys.argv[3]
+subdir = sys.argv[4]  # e.g. realiad_256
+os.makedirs(local_dir, exist_ok=True)
+# List files under subdir/ (each class is a .zip)
+try:
+    files = list_repo_files(repo_id, repo_type="dataset", token=token)
+except Exception as e:
+    print("List repo failed:", e, file=sys.stderr)
+    sys.exit(1)
+zips = [f for f in files if f.startswith(subdir + "/") and f.endswith(".zip")]
+if not zips:
+    print("No zip files under %s/. Repo files: %s" % (subdir, files[:20]), file=sys.stderr)
+    sys.exit(1)
+print("Found", len(zips), "class zip(s). Downloading...")
+for i, path in enumerate(sorted(zips)):
+    fname = os.path.basename(path)
+    print("  [%d/%d] %s" % (i + 1, len(zips), fname))
+    try:
+        path_local = hf_hub_download(
+            repo_id=repo_id,
+            filename=path,
+            repo_type="dataset",
+            token=token,
+            local_dir=local_dir,
+            local_dir_use_symlinks=False,
+        )
+    except Exception as e:
+        print("  Download failed:", e, file=sys.stderr)
+        sys.exit(1)
+print("Class zips download done.")
+
+# Download realiad_jsons.zip (JSON metadata for all classes), if available at repo root
+json_zip = None
+for f in files:
+    if f.endswith("realiad_jsons.zip"):
+        json_zip = f
+        break
+if json_zip is not None:
+    print("Downloading", json_zip, "...")
+    try:
+        path_local = hf_hub_download(
+            repo_id=repo_id,
+            filename=json_zip,
+            repo_type="dataset",
+            token=token,
+            local_dir=local_dir,
+            local_dir_use_symlinks=False,
+        )
+    except Exception as e:
+        print("  Download realiad_jsons.zip failed:", e, file=sys.stderr)
+        sys.exit(1)
+    print("realiad_jsons.zip download done.")
+else:
+    print("Warning: realiad_jsons.zip not found in repo file list.", file=sys.stderr)
+PYDOWNLOAD
+    if [ $? -ne 0 ]; then
+        echo "Download failed. Ensure you accepted the dataset terms at https://huggingface.co/datasets/$HF_REALIAD_REPO"
+        exit 1
+    fi
+    echo "Extracting class zip files into $REALIAD_ROOT..."
+    mkdir -p "$REALIAD_ROOT"
+    for z in "$dl_dir/$REALIAD_SUBDIR"/*.zip; do
+        [ -f "$z" ] || continue
+        echo "  Extracting $(basename "$z")..."
+        unzip -q -o "$z" -d "$REALIAD_ROOT" 2>/dev/null || true
+    done
+    # Extract JSON metadata archive if present (creates realiad_jsons/ subfolder)
+    if [ -f "$dl_dir/realiad_jsons.zip" ]; then
+        echo "Extracting realiad_jsons.zip into $REALIAD_ROOT..."
+        unzip -q -o "$dl_dir/realiad_jsons.zip" -d "$REALIAD_ROOT" 2>/dev/null || true
+    fi
+    # If JSONs are inside class folders (e.g. audiojack/audiojack.json), copy to root
+    for d in "$REALIAD_ROOT"/*/; do
+        [ -d "$d" ] || continue
+        cls=$(basename "$d")
+        if [ -f "$d${cls}.json" ] && [ ! -f "$REALIAD_ROOT/${cls}.json" ]; then
+            cp "$d${cls}.json" "$REALIAD_ROOT/${cls}.json"
+        fi
+    done
+    rm -rf "$dl_dir"
+    echo "Done. Data is in $REALIAD_ROOT"
 fi
 
 echo ""
@@ -219,9 +257,9 @@ echo ""
 
 # Check if data exists
 if [ -d "$REALIAD_ROOT" ] && [ "$(ls -A $REALIAD_ROOT 2>/dev/null)" ]; then
-    echo "✓ Real-IAD realiad_1024: OK ($REALIAD_ROOT)"
+    echo "✓ Real-IAD realiad_256: OK ($REALIAD_ROOT)"
 else
-    echo "✗ Real-IAD realiad_1024: NOT FOUND or empty (expected: $REALIAD_ROOT)"
+    echo "✗ Real-IAD realiad_256: NOT FOUND or empty (expected: $REALIAD_ROOT)"
 fi
 
 # Check for class JSON files
@@ -251,19 +289,19 @@ python -c "import faiss; print('✓ faiss: OK')" || echo "✗ faiss: FAILED"
 
 echo ""
 echo "============================================================================"
-echo "Setup Complete (Real-IAD realiad_1024)!"
+echo "Setup Complete (Real-IAD realiad_256)!"
 echo "============================================================================"
 echo ""
 echo "Next steps:"
 echo "1. Download pretrained weights (if needed):"
 echo "   - Wide ResNet50: model/pretrain/wide_resnet50_racm-8234f177.pth"
 echo ""
-echo "2. Use a config that points to realiad_1024, e.g. create or use:"
-echo "   configs/rdpp_noising/rdpp_noising_256_100e_realiad.py"
-echo "   with: self.data.type = 'RealIAD', self.data.root = 'data/realiad_1024'"
+echo "2. Use a config that points to realiad_256, e.g.:"
+echo "   configs/rdpp_noising/rdpp_noising_256_100e_readiad.py"
+echo "   (self.data.root = 'data/realiad_256')"
 echo ""
-echo "3. Run training on Real-IAD (realiad_1024):"
-echo "   python run.py -c configs/rdpp_noising/rdpp_noising_256_100e_realiad.py"
+echo "3. Run training on Real-IAD (realiad_256):"
+echo "   python run.py -c configs/rdpp_noising/rdpp_noising_256_100e_readiad.py"
 echo ""
 echo "4. Request Real-IAD access if you have not: realiad4ad@outlook.com"
 echo "   Project: https://realiad4ad.github.io/Real-IAD/"

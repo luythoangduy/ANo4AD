@@ -1,12 +1,12 @@
 """
-RD++ Noising configuration for Real-IAD dataset (realiad_1024) - 256x256, 100 epochs.
+RD++ Noising configuration for Real-IAD dataset (realiad_256) - 256x256, 100 epochs.
 
 Two-phase training:
 Phase 1: Build memory bank from teacher features
 Phase 2: Train decoder with adaptive noise + RD++ projection losses
 
 Data and training hyperparameters aligned with configs/invad/invad_realiad.py for Real-IAD.
-Uses data/realiad_1024 (1024x1024 resolution dataset).
+Uses data/realiad_256 (256x256 resolution dataset).
 """
 from argparse import Namespace
 from timm.data.constants import IMAGENET_DEFAULT_MEAN
@@ -45,9 +45,11 @@ class cfg(cfg_common, cfg_dataset_default, cfg_model_rdpp_noising):
         ]
         self.use_adeval = True
 
-        # ==> data (Real-IAD realiad_1024, aligned with invad_realiad.py)
+        # ==> data (Real-IAD realiad_256, aligned with invad_realiad.py)
         self.data.type = 'RealIAD'
-        self.data.root = 'data/realiad_1024'
+        self.data.root = 'data/realiad_256'
+        # JSONs in subfolder (e.g. realiad_jsons/realiad_jsons_sv or realiad_jsons_fuiad_0.2)
+        self.data.json_subdir = 'realiad_jsons/realiad_jsons_sv'
         self.data.use_sample = False
         self.data.views = []  # ['C1', 'C2', 'C3', 'C4', 'C5']
         self.data.loader_type = 'pil'
@@ -94,7 +96,7 @@ class cfg(cfg_common, cfg_dataset_default, cfg_model_rdpp_noising):
             # Memory bank configuration
             coreset_sampling_ratio=0.01,  # 1% of features
             # Adaptive noise configuration
-            n_neighbors=36,
+            n_neighbors=None,
             noise_std_range=(0.01, 0.3),
             enable_noise=True,
             # RD++ specific
@@ -178,6 +180,6 @@ class cfg(cfg_common, cfg_dataset_default, cfg_model_rdpp_noising):
         self.wandb.entity = None  # Set to your wandb username/team
         self.wandb.name = None  # Auto-generated from experiment config
         self.wandb.tags = ['rdpp', 'noising', '100epochs', 'realiad']
-        self.wandb.notes = 'RDPP Noising on Real-IAD (realiad_1024) with adaptive noise injection'
+        self.wandb.notes = 'RDPP Noising on Real-IAD (realiad_256) with adaptive noise injection'
         self.wandb.log_model = False  # Save best model checkpoints to wandb
         self.wandb.log_freq = 50  # Log every 50 iterations

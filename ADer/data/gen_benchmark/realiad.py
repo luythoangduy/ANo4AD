@@ -37,7 +37,7 @@ class MVTecSolver(object):
 
 
 if __name__ == '__main__':
-    # runner = MVTecSolver(root='data/mvtec', is2D=True)
+    runner = MVTecSolver(root='data/realiad_256')
     # runner.run()
-    runner = MVTecSolver(root='/fuxi_team14/users/haoyanghe/codes/ad/ader_hhytest/data/realiad')
+    # runner = MVTecSolver(root='/fuxi_team14/users/haoyanghe/codes/ad/ader_hhytest/data/realiad')
     runner.run()

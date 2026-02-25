@@ -278,6 +278,8 @@ class RDPPAD(data.Dataset):
 class RealIAD(data.Dataset):
 	def __init__(self, cfg, train=True, transform=None, target_transform=None):
 		self.root = cfg.data.root
+		# Optional subdir for JSONs, e.g. 'realiad_jsons/realiad_jsons_sv' when JSONs are not in root
+		self.json_subdir = getattr(cfg.data, 'json_subdir', '') or ''
 		self.train = train
 		self.transform = transform
 		self.target_transform = target_transform
@@ -286,11 +288,19 @@ class RealIAD(data.Dataset):
 		if not isinstance(self.cls_names, list):
 			self.cls_names = [self.cls_names]
 		if len(self.cls_names) == 0:
-			cls_names = os.listdir(self.root)
+			list_dir = os.path.join(self.root, self.json_subdir) if self.json_subdir else self.root
+			cls_names = os.listdir(list_dir)
 			real_cls_names = []
 			for cls_name in cls_names:
-				if cls_name.split('.')[0] not in real_cls_names:
-					real_cls_names.append(cls_name.split('.')[0])
+				if self.json_subdir:
+					if cls_name.endswith('.json'):
+						base = cls_name[:-5]  # strip .json
+						if base not in real_cls_names:
+							real_cls_names.append(base)
+				else:
+					base = cls_name.split('.')[0]
+					if base not in real_cls_names:
+						real_cls_names.append(base)
 			real_cls_names.sort()
 			self.cls_names = real_cls_names
 		self.loader = get_img_loader(cfg.data.loader_type)
@@ -298,9 +308,10 @@ class RealIAD(data.Dataset):
 		self.use_sample = cfg.data.use_sample
 
 		meta_info = dict()
+		json_prefix = f'{self.root}/{self.json_subdir}/' if self.json_subdir else f'{self.root}/'
 		for cls_name in self.cls_names:
 			data_cls_all = []
-			cls_info = json.load(open(f'{self.root}/{cls_name}.json', 'r'))
+			cls_info = json.load(open(f'{json_prefix}{cls_name}.json', 'r'))
 			data_cls = cls_info['train' if self.train else 'test']
 			for data in data_cls:
 				if data['anomaly_class'] == 'OK':

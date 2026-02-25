@@ -41,3 +41,4 @@ model/pretrain/
 # OS files
 .DS_Store
 Thumbs.db
+data/realiad_256/realiad_jsons
